@@ -23,12 +23,12 @@ import {
 import { cn } from "@/lib/utils";
 
 const navItems = [
-  { href: "/admin",            label: "Overview",   icon: LayoutDashboard },
-  { href: "/admin/users",      label: "Users",      icon: Users },
-  { href: "/admin/assignments", label: "Assignments", icon: UserCheck },
-  { href: "/admin/financials", label: "Financials", icon: DollarSign },
-  { href: "/admin/analytics",  label: "Analytics",  icon: BarChart2 },
-  { href: "/admin/settings",   label: "Settings",   icon: Settings },
+  { href: "/admin",             label: "Overview",    icon: LayoutDashboard },
+  { href: "/admin/users",       label: "Users",       icon: Users },
+  { href: "/admin/assignments",  label: "Assignments", icon: UserCheck },
+  { href: "/admin/financials",  label: "Financials",  icon: DollarSign },
+  { href: "/admin/analytics",   label: "Analytics",   icon: BarChart2 },
+  { href: "/admin/settings",    label: "Settings",    icon: Settings },
 ];
 
 export default function AdminLayout({
@@ -47,7 +47,7 @@ export default function AdminLayout({
   }
 
   return (
-    <div className="min-h-screen flex" style={{ background: "#F4F4F6" }}>
+    <div className="min-h-screen flex overflow-hidden" style={{ background: "#F4F4F6" }}>
 
       {/* Mobile overlay */}
       {sidebarOpen && (
@@ -57,14 +57,15 @@ export default function AdminLayout({
         />
       )}
 
-      {/* Sidebar */}
+      {/* ── Sidebar ── */}
       <aside
         className={cn(
-          "fixed top-0 left-0 h-full z-30 flex flex-col transition-transform duration-300",
+          // FIX: added flex-shrink-0 and overflow-hidden to prevent nav leaking
+          "fixed top-0 left-0 h-full z-30 flex flex-col flex-shrink-0 overflow-hidden transition-transform duration-300",
           "lg:translate-x-0 lg:static lg:z-auto",
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
         )}
-        style={{ width: "256px", background: "#1A1A2E" }}
+        style={{ width: "256px", minWidth: "256px", background: "#1A1A2E" }}
       >
         {/* Logo */}
         <div className="flex items-center justify-between px-6 py-6 border-b border-white/10">
@@ -150,8 +151,8 @@ export default function AdminLayout({
         </div>
       </aside>
 
-      {/* Main content */}
-      <div className="flex-1 flex flex-col min-w-0">
+      {/* ── Main content ── */}
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
 
         {/* Top bar */}
         <header
@@ -203,7 +204,7 @@ export default function AdminLayout({
         </header>
 
         {/* Page content */}
-        <main className="flex-1 p-6">
+        <main className="flex-1 p-6 overflow-y-auto">
           {children}
         </main>
       </div>
