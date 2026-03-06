@@ -13,6 +13,7 @@ import {
   AlertCircle, XCircle, Loader2, ChevronLeft,
   ChevronRight, Video, CreditCard, Lock,
 } from "lucide-react";
+export const dynamic = "force-dynamic";
 
 // ── Config ─────────────────────────────────────────────────────────────────
 const DOCTOR_ID   = "REPLACE_WITH_DR_MILLER_UID";
