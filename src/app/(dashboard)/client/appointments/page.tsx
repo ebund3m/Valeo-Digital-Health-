@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { useSearchParams } from "next/navigation";
 import {
@@ -141,7 +141,7 @@ function MiniCalendar({ selected, onSelect }: { selected: string; onSelect: (d: 
 }
 
 // ── Main page ──────────────────────────────────────────────────────────────
-export default function ClientAppointmentsPage() {
+function ClientAppointmentsPageInner() {
   const { user }                    = useAuth();
   const { appointments, loading }   = useClientAppointments();
   const searchParams                = useSearchParams();
@@ -537,5 +537,19 @@ export default function ClientAppointmentsPage() {
         </div>
       )}
     </div>
+  );
+}
+
+// ── Suspense wrapper (required for useSearchParams) ────────────────────────
+export default function ClientAppointmentsPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex items-center justify-center py-24">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2"
+          style={{ borderColor: "#4ECDC4" }} />
+      </div>
+    }>
+      <ClientAppointmentsPageInner />
+    </Suspense>
   );
 }
