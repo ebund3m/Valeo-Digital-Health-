@@ -1,227 +1,147 @@
-"use client";
+'use client';
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
-import Link from "next/link";
-import { createUserWithEmailAndPassword, updateProfile } from "firebase/auth";
-import { doc, setDoc, serverTimestamp } from "firebase/firestore";
-import { auth, db } from "@/lib/firebase";
-import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { z } from "zod";
-
-const registerSchema = z.object({
-  displayName: z.string().min(2, "Please enter your full name"),
-  email:       z.string().email("Please enter a valid email address"),
-  password:    z.string().min(8, "Password must be at least 8 characters"),
-  confirm:     z.string(),
-}).refine((d) => d.password === d.confirm, {
-  message: "Passwords do not match",
-  path:    ["confirm"],
-});
-
-type RegisterFormData = z.infer<typeof registerSchema>;
+import Link from 'next/link';
+import { Shield, Mail, ArrowLeft } from 'lucide-react';
 
 export default function RegisterPage() {
-  const router   = useRouter();
-  const [error,   setError]   = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  const {
-    register,
-    handleSubmit,
-    formState: { errors },
-  } = useForm<RegisterFormData>({ resolver: zodResolver(registerSchema) });
-
-  async function onSubmit(data: RegisterFormData) {
-    setError(null);
-    setLoading(true);
-
-    try {
-      // 1. Create Firebase Auth user
-      const userCredential = await createUserWithEmailAndPassword(
-        auth,
-        data.email,
-        data.password
-      );
-
-      const { user } = userCredential;
-
-      // 2. Set display name
-      await updateProfile(user, { displayName: data.displayName });
-
-      // 3. Create Firestore user document
-      //    onboarded: false triggers the onboarding wizard
-      await setDoc(doc(db, "users", user.uid), {
-        uid:         user.uid,
-        email:       data.email,
-        displayName: data.displayName,
-        role:        "client",
-        onboarded:   false,
-        isActive:    true,
-        createdAt:   serverTimestamp(),
-        lastLoginAt: serverTimestamp(),
-      });
-
-      // 4. Small delay to ensure Firestore write completes before redirect
-      await new Promise(resolve => setTimeout(resolve, 500));
-
-      // 5. Go to onboarding — NOT the dashboard
-      router.push("/onboarding");
-
-    } catch (err: unknown) {
-      const code = (err as { code?: string }).code;
-      if (code === "auth/email-already-in-use") {
-        setError("An account with this email already exists. Please sign in.");
-      } else if (code === "auth/weak-password") {
-        setError("Password is too weak. Please choose a stronger password.");
-      } else {
-        setError("Something went wrong. Please try again.");
-      }
-    } finally {
-      setLoading(false);
-    }
-  }
-
   return (
-    <div className="w-full max-w-md">
-      {/* Mobile logo */}
-      <div className="lg:hidden mb-8">
-        <span
-          className="text-2xl"
-          style={{ fontFamily: "var(--font-dm-serif)", color: "#0D3B44" }}
-        >
-          The Valeo Experience
-        </span>
+    <div
+      className="min-h-screen flex items-center justify-center p-4"
+      style={{ background: 'linear-gradient(135deg, #0D3B44 0%, #1A535C 100%)' }}
+    >
+      {/* Background decoration */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div style={{
+          position: 'absolute', top: '-10%', right: '-10%',
+          width: '500px', height: '500px', borderRadius: '50%',
+          background: 'radial-gradient(circle, rgba(78,205,196,0.12) 0%, transparent 70%)'
+        }} />
+        <div style={{
+          position: 'absolute', bottom: '-10%', left: '-5%',
+          width: '400px', height: '400px', borderRadius: '50%',
+          background: 'radial-gradient(circle, rgba(232,96,76,0.1) 0%, transparent 70%)'
+        }} />
       </div>
 
-      <h1
-        className="text-4xl mb-2"
-        style={{ fontFamily: "var(--font-dm-serif)", color: "#0D3B44" }}
-      >
-        Begin your journey
-      </h1>
-      <p className="text-slate-500 mb-8">
-        Create your account and take the first step.
-      </p>
+      <div className="relative w-full max-w-md">
+        {/* Card */}
+        <div className="rounded-2xl overflow-hidden" style={{
+          background: 'rgba(255,255,255,0.97)',
+          boxShadow: '0 32px 80px rgba(0,0,0,0.3)'
+        }}>
+          {/* Top accent */}
+          <div style={{ height: '4px', background: 'linear-gradient(90deg, #4ECDC4, #E8604C)' }} />
 
-      <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
+          <div className="p-10">
+            {/* Logo */}
+            <div className="text-center mb-8">
+              <p style={{
+                fontFamily: 'var(--font-dm-serif)',
+                fontSize: '24px',
+                color: '#0D3B44',
+                marginBottom: '4px'
+              }}>
+                The Valeo Experience
+              </p>
+              <p style={{ fontSize: '11px', letterSpacing: '2.5px', textTransform: 'uppercase', color: '#4ECDC4', fontWeight: 600 }}>
+                Caribbean Mental Health
+              </p>
+            </div>
 
-        {/* Error banner */}
-        {error && (
-          <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
-            {error}
+            {/* Icon */}
+            <div className="flex justify-center mb-6">
+              <div className="w-20 h-20 rounded-full flex items-center justify-center" style={{
+                background: 'linear-gradient(135deg, rgba(13,59,68,0.08), rgba(78,205,196,0.12))',
+                border: '2px solid rgba(78,205,196,0.2)'
+              }}>
+                <Shield size={36} style={{ color: '#0D3B44' }} />
+              </div>
+            </div>
+
+            {/* Heading */}
+            <div className="text-center mb-8">
+              <h1 style={{
+                fontFamily: 'var(--font-dm-serif)',
+                fontSize: '28px',
+                color: '#0D3B44',
+                marginBottom: '12px',
+                lineHeight: 1.2
+              }}>
+                Private Beta
+              </h1>
+              <p style={{ fontSize: '15px', color: '#4A5568', lineHeight: 1.7 }}>
+                The Valeo Experience platform is currently in a closed beta. New accounts are created by our team only.
+              </p>
+            </div>
+
+            {/* Info box */}
+            <div className="rounded-xl p-4 mb-8" style={{
+              background: 'rgba(78,205,196,0.06)',
+              border: '1px solid rgba(78,205,196,0.2)'
+            }}>
+              <p className="text-sm font-semibold mb-2" style={{ color: '#0D3B44' }}>
+                Already have an account?
+              </p>
+              <p className="text-sm" style={{ color: '#4A5568', lineHeight: 1.6 }}>
+                If you&apos;ve been given access by Dr. Miller or the Valeo team, please sign in using the button below.
+              </p>
+            </div>
+
+            {/* Contact box */}
+            <div className="rounded-xl p-4 mb-8" style={{
+              background: 'rgba(232,96,76,0.05)',
+              border: '1px solid rgba(232,96,76,0.15)'
+            }}>
+              <div className="flex items-start gap-3">
+                <Mail size={18} style={{ color: '#E8604C', flexShrink: 0, marginTop: '1px' }} />
+                <div>
+                  <p className="text-sm font-semibold mb-1" style={{ color: '#0D3B44' }}>
+                    Want access?
+                  </p>
+                  <p className="text-sm" style={{ color: '#4A5568', lineHeight: 1.6 }}>
+                    Reach out to us at{' '}
+                    <a
+                      href="mailto:info@valeoexperience.com"
+                      style={{ color: '#E8604C', fontWeight: 600, textDecoration: 'none' }}
+                    >
+                      info@valeoexperience.com
+                    </a>
+                    {' '}to request an invitation.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div className="space-y-3">
+              <Link
+                href="/login"
+                className="block w-full text-center py-3.5 rounded-xl text-sm font-semibold transition-all"
+                style={{
+                  background: 'linear-gradient(135deg, #0D3B44, #1A535C)',
+                  color: 'white',
+                  boxShadow: '0 4px 16px rgba(13,59,68,0.3)',
+                  textDecoration: 'none'
+                }}
+              >
+                Sign In to Your Account
+              </Link>
+              <Link
+                href="/"
+                className="flex items-center justify-center gap-2 w-full py-3 rounded-xl text-sm font-medium transition-all hover:bg-black/5"
+                style={{ color: '#4A5568', textDecoration: 'none' }}
+              >
+                <ArrowLeft size={15} />
+                Back to Homepage
+              </Link>
+            </div>
           </div>
-        )}
-
-        {/* Full name */}
-        <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1.5">
-            Full name
-          </label>
-          <input
-            {...register("displayName")}
-            type="text"
-            autoComplete="name"
-            placeholder="Your full name"
-            className="w-full px-4 py-3 border border-slate-200 rounded-lg text-sm
-                       focus:outline-none focus:ring-2 focus:border-transparent
-                       transition-all placeholder:text-slate-400"
-          />
-          {errors.displayName && (
-            <p className="text-red-500 text-xs mt-1">{errors.displayName.message}</p>
-          )}
         </div>
 
-        {/* Email */}
-        <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1.5">
-            Email address
-          </label>
-          <input
-            {...register("email")}
-            type="email"
-            autoComplete="email"
-            placeholder="you@example.com"
-            className="w-full px-4 py-3 border border-slate-200 rounded-lg text-sm
-                       focus:outline-none focus:ring-2 focus:border-transparent
-                       transition-all placeholder:text-slate-400"
-          />
-          {errors.email && (
-            <p className="text-red-500 text-xs mt-1">{errors.email.message}</p>
-          )}
-        </div>
-
-        {/* Password */}
-        <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1.5">
-            Password
-          </label>
-          <input
-            {...register("password")}
-            type="password"
-            autoComplete="new-password"
-            placeholder="At least 8 characters"
-            className="w-full px-4 py-3 border border-slate-200 rounded-lg text-sm
-                       focus:outline-none focus:ring-2 focus:border-transparent
-                       transition-all placeholder:text-slate-400"
-          />
-          {errors.password && (
-            <p className="text-red-500 text-xs mt-1">{errors.password.message}</p>
-          )}
-        </div>
-
-        {/* Confirm password */}
-        <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1.5">
-            Confirm password
-          </label>
-          <input
-            {...register("confirm")}
-            type="password"
-            autoComplete="new-password"
-            placeholder="Re-enter your password"
-            className="w-full px-4 py-3 border border-slate-200 rounded-lg text-sm
-                       focus:outline-none focus:ring-2 focus:border-transparent
-                       transition-all placeholder:text-slate-400"
-          />
-          {errors.confirm && (
-            <p className="text-red-500 text-xs mt-1">{errors.confirm.message}</p>
-          )}
-        </div>
-
-        {/* Terms */}
-        <p className="text-xs text-slate-400 leading-relaxed">
-          By creating an account you agree to our{" "}
-          <span className="underline cursor-pointer">Terms of Service</span> and{" "}
-          <span className="underline cursor-pointer">Privacy Policy</span>.
-          Your information is kept strictly confidential.
+        <p className="text-center mt-6 text-xs" style={{ color: 'rgba(255,255,255,0.35)' }}>
+          © 2026 The Valeo Experience · All Rights Reserved
         </p>
-
-        {/* Submit */}
-        <button
-          type="submit"
-          disabled={loading}
-          className="w-full py-3 px-6 rounded-lg text-white font-semibold text-sm
-                     transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed"
-          style={{ background: loading ? "#8A9BA8" : "linear-gradient(135deg, #0D3B44, #1A535C)" }}
-        >
-          {loading ? "Creating account..." : "Create Account"}
-        </button>
-
-      </form>
-
-      {/* Login link */}
-      <p className="text-center text-sm text-slate-500 mt-6">
-        Already have an account?{" "}
-        <Link
-          href="/login"
-          className="font-semibold hover:underline"
-          style={{ color: "#0D3B44" }}
-        >
-          Sign in
-        </Link>
-      </p>
+      </div>
     </div>
   );
 }
