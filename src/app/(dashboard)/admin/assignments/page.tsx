@@ -149,7 +149,8 @@ export default function AdminAssignmentsPage() {
     const matchesFilter =
       filter === "all"              ? true :
       filter === "switch_requested" ? a.switchRequested :
-      filter === "unassigned"       ? !a.doctorId;
+      filter === "unassigned"       ? !a.doctorId :
+      true;
 
     return matchesSearch && matchesFilter;
   });
