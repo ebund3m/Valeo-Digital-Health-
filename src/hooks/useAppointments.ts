@@ -1,0 +1,67 @@
+import { useEffect, useState } from "react";
+import {
+  collection, query, where, orderBy,
+  onSnapshot, addDoc, updateDoc, doc, serverTimestamp,
+} from "firebase/firestore";
+import { db } from "@/lib/firebase";
+import { useAuth } from "@/context/AuthContext";
+
+export type AppointmentStatus = "pending" | "approved" | "rejected" | "completed" | "cancelled";
+
+export interface Appointment {
+  id: string; clientId: string; clientName: string; clientEmail: string;
+  doctorId: string; type: string; date: string; time: string;
+  duration: number; status: AppointmentStatus; notes?: string;
+  createdAt: any; updatedAt: any;
+}
+
+export function useClientAppointments() {
+  const { user } = useAuth();
+  const [appointments, setAppointments] = useState<Appointment[]>([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    if (!user) return;
+    const q = query(collection(db, "appointments"), where("clientId", "==", user.uid), orderBy("createdAt", "desc"));
+    const unsub = onSnapshot(q, (snap) => {
+      setAppointments(snap.docs.map(d => ({ id: d.id, ...d.data() } as Appointment)));
+      setLoading(false);
+    });
+    return () => unsub();
+  }, [user]);
+  return { appointments, loading };
+}
+
+export function useDoctorAppointments() {
+  const { user } = useAuth();
+  const [appointments, setAppointments] = useState<Appointment[]>([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    if (!user) return;
+    const q = query(collection(db, "appointments"), where("doctorId", "==", user.uid), orderBy("createdAt", "desc"));
+    const unsub = onSnapshot(q, (snap) => {
+      setAppointments(snap.docs.map(d => ({ id: d.id, ...d.data() } as Appointment)));
+      setLoading(false);
+    });
+    return () => unsub();
+  }, [user]);
+  return { appointments, loading };
+}
+
+export async function bookAppointment(data: {
+  clientId: string; clientName: string; clientEmail: string; doctorId: string;
+  type: string; date: string; time: string; duration: number; notes?: string;
+}) {
+  const { notes, ...rest } = data;
+const ref = await addDoc(collection(db, "appointments"), {
+  ...rest,
+  ...(notes ? { notes } : {}),
+  status:    "pending",
+  createdAt: serverTimestamp(),
+  updatedAt: serverTimestamp(),
+});
+  return ref.id;
+}
+
+export async function updateAppointmentStatus(appointmentId: string, status: AppointmentStatus) {
+  await updateDoc(doc(db, "appointments", appointmentId), { status, updatedAt: serverTimestamp() });
+}

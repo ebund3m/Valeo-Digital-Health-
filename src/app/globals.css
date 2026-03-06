@@ -1,0 +1,49 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --ocean:        #0D3B44;
+  --ocean-mid:    #1A535C;
+  --teal:         #4ECDC4;
+  --teal-light:   #7EDDD7;
+  --coral:        #E8604C;
+  --sand:         #F5EFE0;
+  --cream:        #FAF8F3;
+  --charcoal:     #22272B;
+  --slate:        #4A5568;
+  --mist:         #8A9BA8;
+
+  --font-dm-sans:  'DM Sans', sans-serif;
+  --font-dm-serif: 'DM Serif Display', serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: var(--font-dm-sans);
+  color: var(--charcoal);
+  background: var(--cream);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3 {
+  font-family: var(--font-dm-serif);
+  font-weight: 400;
+}
+
+@layer utilities {
+  .bg-cream  { background-color: var(--cream); }
+  .bg-ocean  { background-color: var(--ocean); }
+  .text-ocean { color: var(--ocean); }
+  .text-teal  { color: var(--teal); }
+  .ring-teal  { --tw-ring-color: var(--teal); }
+  .border-teal { border-color: var(--teal); }
+}
