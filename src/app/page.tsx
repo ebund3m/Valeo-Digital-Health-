@@ -438,7 +438,7 @@ export default function HomePage() {
             <div className="tab-features">
               {['Comprehensive psychological assessment','Personalised evidence-based treatment plan','Secure virtual or in-person sessions','Emotional intelligence development','Progress tracking & between-session resources'].map((f,i) => <div key={i} className="tab-feature"><div className="tab-feature-dot"></div>{f}</div>)}
             </div>
-            <div className="pricing-chip"><span className="amount">$150</span><span className="per">/ session</span></div>
+            <div className="pricing-chip"><span className="amount">$60</span><span className="per">/ session</span></div>
             <br />
             <Link href="/register" className="btn-hero-primary">Book Free Consultation</Link>
           </div>
@@ -452,7 +452,7 @@ export default function HomePage() {
             <div className="tab-features">
               {['Goal mapping and vision clarity sessions','Mindset shift frameworks','Accountability structure and milestones','Leadership and emotional intelligence development','Flexible scheduling for busy professionals'].map((f,i) => <div key={i} className="tab-feature"><div className="tab-feature-dot"></div>{f}</div>)}
             </div>
-            <div className="pricing-chip"><span className="amount">$120</span><span className="per">/ session</span></div>
+            <div className="pricing-chip"><span className="amount">Request</span><span className="per">/ a Quote</span></div>
             <br />
             <Link href="/register" className="btn-hero-primary">Start Coaching</Link>
           </div>
@@ -466,7 +466,7 @@ export default function HomePage() {
             <div className="tab-features">
               {['Workplace mental health assessments','Custom workshop design and facilitation','Leadership resilience training','Ongoing staff wellness check-ins','Crisis intervention support'].map((f,i) => <div key={i} className="tab-feature"><div className="tab-feature-dot"></div>{f}</div>)}
             </div>
-            <div className="pricing-chip"><span className="amount">Custom</span><span className="per">pricing</span></div>
+            <div className="pricing-chip"><span className="amount">Request</span><span className="per">a Quote</span></div>
             <br />
             <Link href="/register" className="btn-hero-primary">Request a Proposal</Link>
           </div>
@@ -480,7 +480,7 @@ export default function HomePage() {
             <div className="tab-features">
               {['Conferences, summits, and corporate events','Topics tailored to your audience','Available regionally and internationally','Virtual and in-person presentations','Pre-event consultation included'].map((f,i) => <div key={i} className="tab-feature"><div className="tab-feature-dot"></div>{f}</div>)}
             </div>
-            <div className="pricing-chip"><span className="amount">Custom</span><span className="per">engagement</span></div>
+            <div className="pricing-chip"><span className="amount">Request</span><span className="per">a Quote</span></div>
             <br />
             <Link href="/register" className="btn-hero-primary">Book Dr. Miller</Link>
           </div>
