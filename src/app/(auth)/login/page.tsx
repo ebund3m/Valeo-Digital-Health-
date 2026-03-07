@@ -89,6 +89,16 @@ export default function LoginPage() {
 
   return (
     <div className="w-full max-w-md">
+
+      {/* Back to website link */}
+      <Link
+        href="/"
+        className="inline-flex items-center gap-1.5 text-xs mb-8 hover:opacity-70 transition-opacity"
+        style={{ color: "#8A9BA8" }}
+      >
+        ← Back to website
+      </Link>
+
       {/* Mobile logo */}
       <div className="lg:hidden mb-8">
         <span
@@ -189,6 +199,18 @@ export default function LoginPage() {
           Create one
         </Link>
       </p>
+
+      {/* Return to homepage */}
+      <p className="text-center text-xs mt-4">
+        <Link
+          href="/"
+          className="hover:underline"
+          style={{ color: "#8A9BA8" }}
+        >
+          ← Return to valeoexperience.com
+        </Link>
+      </p>
+
     </div>
   );
 }
