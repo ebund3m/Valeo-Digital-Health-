@@ -120,7 +120,7 @@ function exportCSV(payments: Payment[]) {
     p.clientName ?? p.clientId,
     p.sessionType ?? "",
     p.amount,
-    p.currency ?? "TTD",
+    p.currency ?? "USD",
     p.status,
     p.reference ?? "",
     p.provider ?? "WiPay",
@@ -190,7 +190,7 @@ export default function AdminPaymentsPage() {
 
   const monthGrowth = lastM > 0 ? Math.round(((thisM - lastM) / lastM) * 100) : null;
 
-  const fmt = (n: number) => new Intl.NumberFormat("en-US", { style:"currency", currency:"TTD", maximumFractionDigits:0 }).format(n);
+  const fmt = (n: number) => new Intl.NumberFormat("en-US", { style:"currency", currency:"USD", maximumFractionDigits:0 }).format(n);
 
   // ── Filtering ─────────────────────────────────────────────────────────────
   const filtered = useMemo(() => payments.filter(p => {

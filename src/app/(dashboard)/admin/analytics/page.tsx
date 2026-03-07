@@ -80,7 +80,7 @@ function pctChange(current: number, previous: number): number | null {
 }
 
 const fmt = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "TTD", maximumFractionDigits: 0 }).format(n);
+  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n);
 
 // ── Sub-components ─────────────────────────────────────────────────────────
 
@@ -453,7 +453,7 @@ export default function AdminAnalyticsPage() {
           <div className="flex items-center justify-between mb-1">
             <div>
               <p className="text-sm font-semibold" style={{ color: COLORS.ocean }}>Revenue Trend</p>
-              <p className="text-xs" style={{ color: COLORS.slate }}>TTD — completed payments</p>
+              <p className="text-xs" style={{ color: COLORS.slate }}>USD — completed payments</p>
             </div>
             <TrendingUp size={16} style={{ color: COLORS.slate }} />
           </div>

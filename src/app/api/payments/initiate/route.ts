@@ -12,7 +12,7 @@ const WIPAY_BASE_URL       = WIPAY_ENVIRONMENT === "live"
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
 
-// ── Session pricing (TTD) ─────────────────────────────────────────────────
+// ── Session Pricing (USD) ─────────────────────────────────────────────────
 const SESSION_PRICES: Record<string, number> = {
   "Individual Therapy":  400,
   "Couples Therapy":     600,

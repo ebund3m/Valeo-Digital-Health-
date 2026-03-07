@@ -629,7 +629,7 @@ export default function DoctorSchedulePage() {
               {availSubTab === "pricing" && (
                 <div className="rounded-2xl p-5"
                   style={{ background: "white", boxShadow: "0 1px 4px rgba(13,59,68,0.07)" }}>
-                  <p className="text-sm font-semibold mb-1" style={{ color: "#0D3B44" }}>Session Pricing (TTD)</p>
+                  <p className="text-sm font-semibold mb-1" style={{ color: "#0D3B44" }}>Session Pricing (USD)</p>
                   <p className="text-xs mb-6" style={{ color: "#8A9BA8" }}>
                     Set prices per session type. Set to 0 for free sessions.
                   </p>
@@ -643,7 +643,7 @@ export default function DoctorSchedulePage() {
                           )}
                         </div>
                         <div className="flex items-center gap-2">
-                          <span className="text-sm font-semibold" style={{ color: "#8A9BA8" }}>TTD</span>
+                          <span className="text-sm font-semibold" style={{ color: "#8A9BA8" }}>USD</span>
                           <input type="number" min={0} step={50}
                             value={avail.sessionPricing[type] ?? 0}
                             onChange={e => setAvail(a => ({ ...a, sessionPricing: { ...a.sessionPricing, [type]: Number(e.target.value) } }))}

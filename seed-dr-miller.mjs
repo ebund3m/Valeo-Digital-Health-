@@ -73,11 +73,10 @@ const drMillerProfile = {
   maxClients:       30,
   acceptingClients: true,
 
-  // Pricing (TTD)
+  // Pricing (USD)
   sessionPrice: {
-    video:     1000,
-    inPerson:  1200,
-    phone:     800,
+    video:     60,
+    couples:  90,
   },
 
   // Credentials

@@ -381,7 +381,7 @@ function ClientAppointmentsPageInner() {
                   </h4>
                   <p className="text-sm mb-1" style={{ color: "#4A5568" }}>
                     You will be securely redirected to WiPay to complete your payment of{" "}
-                    <strong>TTD ${selectedTypeObj?.price}</strong>.
+                    <strong>USD ${selectedTypeObj?.price}</strong>.
                   </p>
                   <p className="text-xs flex items-center justify-center gap-1 mt-4"
                     style={{ color: "#8A9BA8" }}>
@@ -505,7 +505,7 @@ function ClientAppointmentsPageInner() {
                       <Lock size={14} className="flex-shrink-0 mt-0.5" style={{ color: "#4ECDC4" }} />
                       <p className="text-xs" style={{ color: "#4A5568" }}>
                         You will be redirected to <strong>WiPay</strong> to securely complete your payment of{" "}
-                        <strong>TTD ${selectedTypeObj.price}</strong>. Your session will be confirmed upon payment.
+                        <strong>USD ${selectedTypeObj.price}</strong>. Your session will be confirmed upon payment.
                       </p>
                     </div>
                   )}
@@ -527,7 +527,7 @@ function ClientAppointmentsPageInner() {
                         ? <><Loader2 size={15} className="animate-spin" /> Processing...</>
                         : selectedTypeObj?.price === 0
                           ? "Confirm Booking"
-                          : <><CreditCard size={15} /> Pay TTD ${selectedTypeObj?.price}</>}
+                          : <><CreditCard size={15} /> Pay USD ${selectedTypeObj?.price}</>}
                     </button>
                   </div>
                 </div>

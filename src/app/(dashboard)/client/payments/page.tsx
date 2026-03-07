@@ -67,7 +67,7 @@ function PaymentCard({ payment }: { payment: Payment }) {
     : "—";
 
   const formattedAmount = new Intl.NumberFormat("en-US", {
-    style: "currency", currency: payment.currency || "TTD",
+    style: "currency", currency: payment.currency || "USD",
   }).format(payment.amount);
 
   return (
@@ -99,7 +99,7 @@ function PaymentCard({ payment }: { payment: Payment }) {
               }}>
                 {formattedAmount}
               </p>
-              <p className="text-xs mt-0.5" style={{ color: "#C4C4C4" }}>{payment.currency || "TTD"}</p>
+              <p className="text-xs mt-0.5" style={{ color: "#C4C4C4" }}>{payment.currency || "USD"}</p>
             </div>
           </div>
           <div className="flex items-center gap-3 mt-2">
@@ -205,7 +205,7 @@ export default function ClientPaymentsPage() {
   const pendingCount  = payments.filter(p => p.status === "pending").length;
 
   const formatCurrency = (amt: number) =>
-    new Intl.NumberFormat("en-US", { style: "currency", currency: "TTD" }).format(amt);
+    new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(amt);
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
