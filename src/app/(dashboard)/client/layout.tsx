@@ -63,7 +63,7 @@ export default function ClientLayout({
       <aside
         className={cn(
           "fixed top-0 left-0 h-full z-30 flex flex-col transition-transform duration-300",
-          "w-64 lg:translate-x-0 lg:static lg:z-auto",
+          "w-64 lg:!translate-x-0 lg:static lg:z-auto",
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
         )}
         style={{ background: "#0D3B44", width: "256px" }}

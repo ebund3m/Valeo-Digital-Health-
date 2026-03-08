@@ -64,7 +64,7 @@ export default function DoctorLayout({
       <aside
         className={cn(
           "fixed top-0 left-0 h-full z-30 flex flex-col transition-transform duration-300",
-          "lg:translate-x-0 lg:static lg:z-auto",
+          "lg:!translate-x-0 lg:static lg:z-auto",
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
         )}
         style={{ width: "256px", background: "#0A2E35" }}
