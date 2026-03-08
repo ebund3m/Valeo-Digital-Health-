@@ -62,7 +62,7 @@ export default function AdminLayout({
         className={cn(
           // FIX: added flex-shrink-0 and overflow-hidden to prevent nav leaking
           "fixed top-0 left-0 h-full z-30 flex flex-col flex-shrink-0 overflow-hidden transition-transform duration-300",
-          "lg:translate-x-0 lg:static lg:z-auto",
+          "lg:!translate-x-0 lg:static lg:z-auto",
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
         )}
         style={{ width: "256px", minWidth: "256px", background: "#1A1A2E" }}
