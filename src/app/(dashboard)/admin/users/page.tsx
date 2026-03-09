@@ -1,13 +1,15 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { collection, getDocs, orderBy, query, doc, updateDoc, serverTimestamp } from "firebase/firestore";
+import { collection, getDocs, orderBy, query, doc, updateDoc, serverTimestamp, addDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useRouter } from "next/navigation";
 import {
   Users, Search, Plus, X, Loader2, Shield,
-  CheckCircle, AlertCircle, Mail,
-  MoreVertical, UserX, UserCheck, ChevronDown,
+  CheckCircle, AlertCircle, Mail, MoreVertical,
+  UserX, UserCheck, ChevronDown, KeyRound, Pencil,
+  Calendar, Download, Send, CreditCard, Phone, User,
+  Save, ChevronRight,
 } from "lucide-react";
 
 type Role = "client" | "doctor" | "admin";
@@ -19,9 +21,11 @@ interface PlatformUser {
   role:        Role;
   isActive:    boolean;
   onboarded:   boolean;
+  phone?:      string;
   createdAt:   any;
 }
 
+// ── Role Badge ────────────────────────────────────────────────────────────────
 function RoleBadge({ role }: { role: Role }) {
   const map = {
     client: { bg: "rgba(78,205,196,0.12)",  color: "#2BA8A0" },
@@ -37,10 +41,119 @@ function RoleBadge({ role }: { role: Role }) {
   );
 }
 
-function UserRow({ user, onToggleActive, onChangeRole, acting }: {
+// ── Edit User Drawer ──────────────────────────────────────────────────────────
+function EditUserDrawer({ user, onClose, onSave }: {
+  user: PlatformUser;
+  onClose: () => void;
+  onSave: (uid: string, data: Partial<PlatformUser>) => Promise<void>;
+}) {
+  const [form, setForm] = useState({
+    displayName: user.displayName,
+    phone: user.phone || "",
+    role: user.role,
+  });
+  const [saving, setSaving] = useState(false);
+
+  async function handleSave() {
+    setSaving(true);
+    await onSave(user.uid, form);
+    setSaving(false);
+    onClose();
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
+      <div className="relative w-full max-w-md h-full flex flex-col"
+        style={{ background: "white", boxShadow: "-8px 0 32px rgba(0,0,0,0.15)" }}>
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-5 border-b"
+          style={{ borderColor: "rgba(26,26,46,0.08)" }}>
+          <div>
+            <h3 style={{ fontFamily: "var(--font-dm-serif)", fontSize: "20px", color: "#1A1A2E" }}>Edit User</h3>
+            <p className="text-xs mt-0.5" style={{ color: "#8A9BA8" }}>{user.email}</p>
+          </div>
+          <button onClick={onClose} className="p-2 rounded-lg hover:bg-black/5">
+            <X size={18} style={{ color: "#8A9BA8" }} />
+          </button>
+        </div>
+        {/* Fields */}
+        <div className="flex-1 overflow-y-auto p-6 space-y-5">
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "#8A9BA8" }}>Full Name</label>
+            <div className="relative">
+              <User size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2" style={{ color: "#8A9BA8" }} />
+              <input type="text" value={form.displayName}
+                onChange={e => setForm(f => ({ ...f, displayName: e.target.value }))}
+                className="w-full pl-10 pr-4 py-3 rounded-xl text-sm outline-none"
+                style={{ background: "#F8F9FA", border: "1px solid rgba(26,26,46,0.1)", color: "#1A1A2E" }} />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "#8A9BA8" }}>Phone Number</label>
+            <div className="relative">
+              <Phone size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2" style={{ color: "#8A9BA8" }} />
+              <input type="tel" value={form.phone}
+                onChange={e => setForm(f => ({ ...f, phone: e.target.value }))}
+                placeholder="+1 (784) 000-0000"
+                className="w-full pl-10 pr-4 py-3 rounded-xl text-sm outline-none"
+                style={{ background: "#F8F9FA", border: "1px solid rgba(26,26,46,0.1)", color: "#1A1A2E" }} />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "#8A9BA8" }}>Role</label>
+            <div className="grid grid-cols-3 gap-2">
+              {(["client", "doctor", "admin"] as Role[]).map(r => (
+                <button key={r} onClick={() => setForm(f => ({ ...f, role: r }))}
+                  className="py-2.5 rounded-xl text-xs font-semibold capitalize transition-all"
+                  style={{
+                    background: form.role === r ? "linear-gradient(135deg, #1A1A2E, #2D2D4E)" : "rgba(26,26,46,0.04)",
+                    color: form.role === r ? "white" : "#4A5568",
+                    border: form.role === r ? "none" : "1px solid rgba(26,26,46,0.1)",
+                  }}>
+                  {r}
+                </button>
+              ))}
+            </div>
+          </div>
+          {/* Email — locked */}
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "#8A9BA8" }}>Email Address</label>
+            <div className="relative">
+              <Mail size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2" style={{ color: "#C4C4C4" }} />
+              <input type="email" value={user.email} disabled
+                className="w-full pl-10 pr-4 py-3 rounded-xl text-sm"
+                style={{ background: "rgba(26,26,46,0.03)", border: "1px solid rgba(26,26,46,0.06)", color: "#C4C4C4", cursor: "not-allowed" }} />
+            </div>
+            <p className="text-xs mt-1" style={{ color: "#8A9BA8" }}>Email cannot be changed.</p>
+          </div>
+        </div>
+        {/* Footer */}
+        <div className="px-6 py-4 border-t flex gap-3" style={{ borderColor: "rgba(26,26,46,0.08)" }}>
+          <button onClick={onClose} className="flex-1 py-3 rounded-xl text-sm font-semibold"
+            style={{ background: "rgba(26,26,46,0.05)", color: "#4A5568" }}>
+            Cancel
+          </button>
+          <button onClick={handleSave} disabled={saving}
+            className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold text-white transition-all"
+            style={{ background: "linear-gradient(135deg, #1A1A2E, #2D2D4E)", opacity: saving ? 0.7 : 1 }}>
+            {saving ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />}
+            {saving ? "Saving…" : "Save Changes"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── User Row ──────────────────────────────────────────────────────────────────
+function UserRow({ user, onToggleActive, onChangeRole, onResetPassword, onEdit, onViewAppointments, acting }: {
   user: PlatformUser;
   onToggleActive: (uid: string, active: boolean) => void;
   onChangeRole:   (uid: string, role: Role) => void;
+  onResetPassword: (uid: string, email: string) => void;
+  onEdit: (user: PlatformUser) => void;
+  onViewAppointments: (uid: string) => void;
   acting: string | null;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -61,11 +174,12 @@ function UserRow({ user, onToggleActive, onChangeRole, acting }: {
           <div>
             <p className="text-sm font-semibold" style={{ color: "#1A1A2E" }}>{user.displayName}</p>
             <p className="text-xs" style={{ color: "#8A9BA8" }}>{user.email}</p>
+            {user.phone && <p className="text-xs" style={{ color: "#C4C4C4" }}>{user.phone}</p>}
           </div>
         </div>
       </td>
 
-      {/* Role — clickable dropdown */}
+      {/* Role */}
       <td className="py-4 px-4">
         <div className="relative">
           <button onClick={() => { setRoleOpen(!roleOpen); setMenuOpen(false); }}
@@ -119,6 +233,8 @@ function UserRow({ user, onToggleActive, onChangeRole, acting }: {
         <span className="text-xs" style={{ color: "#8A9BA8" }}>
           {user.createdAt?.toDate
             ? user.createdAt.toDate().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+            : user.createdAt
+            ? new Date(user.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
             : "—"}
         </span>
       </td>
@@ -136,18 +252,47 @@ function UserRow({ user, onToggleActive, onChangeRole, acting }: {
             )}
           {menuOpen && (
             <div className="absolute top-8 right-0 z-30 rounded-xl overflow-hidden py-1"
-              style={{ background: "white", boxShadow: "0 4px 16px rgba(13,59,68,0.14)", minWidth: "170px" }}>
+              style={{ background: "white", boxShadow: "0 4px 20px rgba(13,59,68,0.16)", minWidth: "190px" }}>
+
+              {/* Edit */}
+              <button onClick={() => { onEdit(user); setMenuOpen(false); }}
+                className="w-full text-left px-4 py-2.5 text-xs flex items-center gap-2 hover:bg-black/5"
+                style={{ color: "#1A1A2E" }}>
+                <Pencil size={13} style={{ color: "#4ECDC4" }} /> Edit Details
+              </button>
+
+              {/* Reset Password */}
+              <button onClick={() => { onResetPassword(user.uid, user.email); setMenuOpen(false); }}
+                className="w-full text-left px-4 py-2.5 text-xs flex items-center gap-2 hover:bg-black/5"
+                style={{ color: "#1A1A2E" }}>
+                <KeyRound size={13} style={{ color: "#D4A853" }} /> Reset Password
+              </button>
+
+              {/* View Appointments (clients only) */}
+              {user.role === "client" && (
+                <button onClick={() => { onViewAppointments(user.uid); setMenuOpen(false); }}
+                  className="w-full text-left px-4 py-2.5 text-xs flex items-center gap-2 hover:bg-black/5"
+                  style={{ color: "#1A1A2E" }}>
+                  <Calendar size={13} style={{ color: "#0D3B44" }} /> View Appointments
+                </button>
+              )}
+
+              <div style={{ height: "1px", background: "rgba(26,26,46,0.06)", margin: "4px 0" }} />
+
+              {/* Copy Email */}
+              <button onClick={() => { navigator.clipboard.writeText(user.email); setMenuOpen(false); }}
+                className="w-full text-left px-4 py-2.5 text-xs flex items-center gap-2 hover:bg-black/5"
+                style={{ color: "#4A5568" }}>
+                <Mail size={13} /> Copy Email
+              </button>
+
+              {/* Deactivate / Reactivate */}
               <button onClick={() => { onToggleActive(user.uid, user.isActive === false); setMenuOpen(false); }}
                 className="w-full text-left px-4 py-2.5 text-xs flex items-center gap-2 hover:bg-black/5"
                 style={{ color: user.isActive !== false ? "#E8604C" : "#2BA8A0" }}>
                 {user.isActive !== false
                   ? <><UserX size={13} /> Deactivate</>
                   : <><UserCheck size={13} /> Reactivate</>}
-              </button>
-              <button onClick={() => { navigator.clipboard.writeText(user.email); setMenuOpen(false); }}
-                className="w-full text-left px-4 py-2.5 text-xs flex items-center gap-2 hover:bg-black/5"
-                style={{ color: "#4A5568" }}>
-                <Mail size={13} /> Copy Email
               </button>
             </div>
           )}
@@ -157,14 +302,17 @@ function UserRow({ user, onToggleActive, onChangeRole, acting }: {
   );
 }
 
+// ── Main Page ─────────────────────────────────────────────────────────────────
 export default function AdminUsersPage() {
   const router = useRouter();
-  const [users,   setUsers]   = useState<PlatformUser[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [search,  setSearch]  = useState("");
-  const [filter,  setFilter]  = useState<"all"|Role>("all");
-  const [acting,  setActing]  = useState<string | null>(null);
-  const [toast,   setToast]   = useState<{ type: "success"|"error"; msg: string } | null>(null);
+  const [users,      setUsers]      = useState<PlatformUser[]>([]);
+  const [loading,    setLoading]    = useState(true);
+  const [search,     setSearch]     = useState("");
+  const [filter,     setFilter]     = useState<"all"|Role>("all");
+  const [acting,     setActing]     = useState<string | null>(null);
+  const [toast,      setToast]      = useState<{ type: "success"|"error"; msg: string } | null>(null);
+  const [editUser,   setEditUser]   = useState<PlatformUser | null>(null);
+  const [exporting,  setExporting]  = useState(false);
 
   function showToast(type: "success"|"error", msg: string) {
     setToast({ type, msg });
@@ -208,10 +356,73 @@ export default function AdminUsersPage() {
     }
   }
 
+  async function handleResetPassword(uid: string, email: string) {
+    setActing(uid);
+    try {
+      const res = await fetch("/api/admin/reset-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      if (!res.ok) throw new Error();
+      showToast("success", `Password reset email sent to ${email}`);
+    } catch {
+      showToast("error", "Failed to send reset email.");
+    } finally {
+      setActing(null);
+    }
+  }
+
+  async function handleEditSave(uid: string, data: Partial<PlatformUser>) {
+    try {
+      await updateDoc(doc(db, "users", uid), { ...data, updatedAt: serverTimestamp() });
+      setUsers(p => p.map(u => u.uid === uid ? { ...u, ...data } : u));
+      showToast("success", "User details updated.");
+    } catch {
+      showToast("error", "Failed to update user.");
+    }
+  }
+
+  function handleViewAppointments(uid: string) {
+    router.push(`/admin/users/${uid}/appointments`);
+  }
+
+  function handleExportCSV() {
+    setExporting(true);
+    try {
+      const headers = ["Name", "Email", "Role", "Status", "Phone", "Joined"];
+      const rows = users.map(u => [
+        u.displayName,
+        u.email,
+        u.role,
+        u.isActive !== false ? "Active" : "Inactive",
+        u.phone || "",
+        u.createdAt?.toDate
+          ? u.createdAt.toDate().toLocaleDateString()
+          : u.createdAt
+          ? new Date(u.createdAt).toLocaleDateString()
+          : "",
+      ]);
+      const csv = [headers, ...rows].map(r => r.map(c => `"${c}"`).join(",")).join("\n");
+      const blob = new Blob([csv], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `valeo-users-${new Date().toISOString().slice(0,10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast("success", "User data exported successfully.");
+    } catch {
+      showToast("error", "Failed to export data.");
+    } finally {
+      setExporting(false);
+    }
+  }
+
   const filtered = users.filter(u =>
     (filter === "all" || u.role === filter) &&
-    (u.displayName.toLowerCase().includes(search.toLowerCase()) ||
-     u.email.toLowerCase().includes(search.toLowerCase()))
+    (u.displayName?.toLowerCase().includes(search.toLowerCase()) ||
+     u.email?.toLowerCase().includes(search.toLowerCase()))
   );
 
   const counts = {
@@ -225,6 +436,15 @@ export default function AdminUsersPage() {
   return (
     <div className="max-w-6xl mx-auto space-y-6">
 
+      {/* Edit Drawer */}
+      {editUser && (
+        <EditUserDrawer
+          user={editUser}
+          onClose={() => setEditUser(null)}
+          onSave={handleEditSave}
+        />
+      )}
+
       {/* Toast */}
       {toast && (
         <div className="fixed top-6 right-6 z-50 flex items-center gap-3 px-5 py-3.5 rounded-2xl shadow-lg text-sm font-medium"
@@ -235,16 +455,46 @@ export default function AdminUsersPage() {
       )}
 
       {/* Header */}
-      <div className="flex items-start justify-between">
+      <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
           <h2 className="text-2xl" style={{ fontFamily: "var(--font-dm-serif)", color: "#1A1A2E" }}>Users</h2>
           <p className="text-sm mt-0.5" style={{ color: "#8A9BA8" }}>Manage all platform accounts and roles</p>
         </div>
-        <button onClick={() => router.push("/admin/users/add-doctor")}
-          className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-white hover:-translate-y-0.5 transition-all"
-          style={{ background: "linear-gradient(135deg, #1A1A2E, #2D2D4E)" }}>
-          <Plus size={15} /> Add Doctor
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Export CSV */}
+          <button onClick={handleExportCSV} disabled={exporting}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all hover:-translate-y-0.5"
+            style={{ background: "white", color: "#4A5568", border: "1px solid rgba(26,26,46,0.12)", boxShadow: "0 1px 3px rgba(26,26,46,0.07)" }}>
+            <Download size={15} style={{ color: "#4ECDC4" }} />
+            {exporting ? "Exporting…" : "Export CSV"}
+          </button>
+          {/* Announcement */}
+          <button onClick={() => router.push("/admin/announcements")}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all hover:-translate-y-0.5"
+            style={{ background: "white", color: "#4A5568", border: "1px solid rgba(26,26,46,0.12)", boxShadow: "0 1px 3px rgba(26,26,46,0.07)" }}>
+            <Send size={15} style={{ color: "#D4A853" }} />
+            Announce
+          </button>
+          {/* Manual Payment */}
+          <button onClick={() => router.push("/admin/payments/manual")}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all hover:-translate-y-0.5"
+            style={{ background: "white", color: "#4A5568", border: "1px solid rgba(26,26,46,0.12)", boxShadow: "0 1px 3px rgba(26,26,46,0.07)" }}>
+            <CreditCard size={15} style={{ color: "#E8604C" }} />
+            Manual Payment
+          </button>
+          {/* Add Doctor */}
+          <button onClick={() => router.push("/admin/users/add-doctor")}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-white hover:-translate-y-0.5 transition-all"
+            style={{ background: "linear-gradient(135deg, #1A1A2E, #2D2D4E)" }}>
+            <Plus size={15} /> Add Doctor
+          </button>
+          {/* Create Account */}
+          <button onClick={() => router.push("/admin/users/create")}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-white hover:-translate-y-0.5 transition-all"
+            style={{ background: "linear-gradient(135deg, #0D3B44, #1A535C)" }}>
+            <Plus size={15} /> Create Account
+          </button>
+        </div>
       </div>
 
       {/* Stats */}
@@ -270,7 +520,7 @@ export default function AdminUsersPage() {
         ))}
       </div>
 
-      {/* Filter + search */}
+      {/* Filter + Search */}
       <div className="flex flex-col sm:flex-row gap-3">
         <div className="flex items-center gap-2 flex-wrap">
           {(["all","client","doctor","admin"] as const).map(f => (
@@ -286,8 +536,7 @@ export default function AdminUsersPage() {
           ))}
         </div>
         <div className="relative flex-1">
-          <Search size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2"
-            style={{ color: "#8A9BA8" }} />
+          <Search size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2" style={{ color: "#8A9BA8" }} />
           <input type="text" value={search} onChange={e => setSearch(e.target.value)}
             placeholder="Search by name or email..."
             className="w-full pl-10 pr-4 py-2.5 rounded-xl text-sm border focus:outline-none"
@@ -324,12 +573,12 @@ export default function AdminUsersPage() {
               <thead>
                 <tr style={{ borderBottom: "1px solid rgba(26,26,46,0.07)" }}>
                   {[
-                    { label: "User",        cls: "" },
-                    { label: "Role",        cls: "" },
-                    { label: "Status",      cls: "" },
-                    { label: "Onboarding",  cls: "hidden lg:table-cell" },
-                    { label: "Joined",      cls: "hidden md:table-cell" },
-                    { label: "",            cls: "" },
+                    { label: "User",       cls: "" },
+                    { label: "Role",       cls: "" },
+                    { label: "Status",     cls: "" },
+                    { label: "Onboarding", cls: "hidden lg:table-cell" },
+                    { label: "Joined",     cls: "hidden md:table-cell" },
+                    { label: "",           cls: "" },
                   ].map(({ label, cls }) => (
                     <th key={label}
                       className={`text-left py-3 px-4 first:px-5 last:px-5 text-xs font-semibold uppercase tracking-wider ${cls}`}
@@ -344,6 +593,9 @@ export default function AdminUsersPage() {
                   <UserRow key={u.uid} user={u}
                     onToggleActive={handleToggleActive}
                     onChangeRole={handleChangeRole}
+                    onResetPassword={handleResetPassword}
+                    onEdit={setEditUser}
+                    onViewAppointments={handleViewAppointments}
                     acting={acting} />
                 ))}
               </tbody>
