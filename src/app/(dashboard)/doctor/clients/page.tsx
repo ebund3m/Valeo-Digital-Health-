@@ -1,36 +1,60 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { collection, query, where, getDocs, orderBy } from "firebase/firestore";
+import { collection, query, where, getDocs, getDoc, doc, orderBy } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import {
-  Search, Users, Calendar, Clock, ChevronRight,
-  Loader2, Mail, Phone, MapPin, Heart, X, CheckCircle,
+  Search, Users, Calendar, Clock, ChevronRight, Loader2,
+  Mail, Phone, MapPin, Heart, X, CheckCircle, MessageCircle,
+  ExternalLink, FileText, TrendingUp, AlertCircle,
 } from "lucide-react";
+import Link from "next/link";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 interface Client {
-  uid:          string;
-  displayName:  string;
-  email:        string;
-  phone:        string;
-  city:         string;
-  country:      string;
-  goals:        string[];
-  preferredTime: string;
-  emergencyContact: { name: string; phone: string };
-  createdAt:    any;
+  uid:             string;
+  displayName:     string;
+  email:           string;
+  phone?:          string;
+  city?:           string;
+  country?:        string;
+  goals?:          string[];
+  preferredTime?:  string;
+  emergencyContact?: { name: string; phone: string };
+  createdAt:       any;
+  isActive?:       boolean;
 }
 
 interface Appointment {
-  id:       string;
-  type:     string;
-  date:     string;
-  time:     string;
-  duration: number;
-  status:   "pending" | "approved" | "rejected" | "completed" | "cancelled";
-  notes?:   string;
+  id:        string;
+  type:      string;
+  date:      string;
+  time:      string;
+  duration:  number;
+  status:    "pending" | "approved" | "rejected" | "completed" | "cancelled";
+  notes?:    string;
+  meetLink?: string;
+  clientId:  string;
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function toDate(ts: any): Date | null {
+  if (!ts) return null;
+  if (ts.toDate) return ts.toDate();           // Firestore Timestamp
+  if (ts instanceof Date) return ts;
+  if (typeof ts === "string") return new Date(ts); // ISO string (admin-created users)
+  return null;
+}
+
+function timeAgo(ts: any): string {
+  const d = toDate(ts);
+  if (!d) return "—";
+  const diff = Math.floor((Date.now() - d.getTime()) / 1000);
+  if (diff < 3600)  return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 2592000) return `${Math.floor(diff / 86400)}d ago`;
+  return d.toLocaleDateString("en-US", { month: "short", year: "numeric" });
 }
 
 // ── Status badge ───────────────────────────────────────────────────────────
@@ -55,12 +79,26 @@ function StatusBadge({ status }: { status: Appointment["status"] }) {
 function ClientDrawer({ client, appointments, onClose }: {
   client: Client; appointments: Appointment[]; onClose: () => void;
 }) {
+  const [apptFilter, setApptFilter] = useState<"all"|"upcoming"|"completed">("all");
+
   const upcoming  = appointments.filter(a => ["pending","approved"].includes(a.status));
   const completed = appointments.filter(a => a.status === "completed");
 
+  const shownAppts = apptFilter === "upcoming"  ? upcoming
+                   : apptFilter === "completed" ? completed
+                   : appointments;
+
+  const memberSince = toDate(client.createdAt);
+
+  // Completion rate
+  const completionRate = appointments.length > 0
+    ? Math.round((completed.length / appointments.length) * 100)
+    : 0;
+
   return (
     <div className="fixed inset-0 z-50 flex justify-end"
-      style={{ background: "rgba(0,0,0,0.4)", backdropFilter: "blur(4px)" }}>
+      style={{ background: "rgba(0,0,0,0.4)", backdropFilter: "blur(4px)" }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="w-full max-w-md h-full overflow-y-auto"
         style={{ background: "#FAF8F3", boxShadow: "-4px 0 24px rgba(0,0,0,0.1)" }}>
 
@@ -68,41 +106,60 @@ function ClientDrawer({ client, appointments, onClose }: {
         <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 border-b"
           style={{ background: "#FAF8F3", borderColor: "rgba(13,59,68,0.08)" }}>
           <h3 className="font-semibold" style={{ color: "#0D3B44" }}>Client Profile</h3>
-          <button onClick={onClose} className="p-2 rounded-lg hover:bg-black/5">
-            <X size={18} style={{ color: "#4A5568" }} />
-          </button>
+          <div className="flex items-center gap-2">
+            <Link href="/doctor/messages"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors hover:opacity-80"
+              style={{ background: "rgba(78,205,196,0.12)", color: "#2BA8A0" }}>
+              <MessageCircle size={12}/> Message
+            </Link>
+            <button onClick={onClose} className="p-2 rounded-lg hover:bg-black/5">
+              <X size={18} style={{ color: "#4A5568" }} />
+            </button>
+          </div>
         </div>
 
         <div className="p-6 space-y-5">
+
           {/* Avatar + name */}
           <div className="flex items-center gap-4">
             <div className="w-14 h-14 rounded-2xl flex items-center justify-center text-xl font-bold flex-shrink-0"
               style={{ background: "linear-gradient(135deg, #0D3B44, #1A535C)", color: "white" }}>
               {client.displayName?.[0]?.toUpperCase() ?? "C"}
             </div>
-            <div>
+            <div className="flex-1">
               <p className="font-semibold text-lg"
                 style={{ fontFamily: "var(--font-dm-serif)", color: "#0D3B44" }}>
                 {client.displayName}
               </p>
               <p className="text-xs" style={{ color: "#8A9BA8" }}>
-                Client since {client.createdAt?.toDate
-                  ? client.createdAt.toDate().toLocaleDateString("en-US", { month: "long", year: "numeric" })
+                Client since {memberSince
+                  ? memberSince.toLocaleDateString("en-US", { month: "long", year: "numeric" })
                   : "—"}
               </p>
+            </div>
+            {/* Active status dot */}
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full"
+              style={{ background: upcoming.length > 0 ? "rgba(78,205,196,0.1)" : "rgba(138,155,168,0.1)" }}>
+              <span className="w-1.5 h-1.5 rounded-full"
+                style={{ background: upcoming.length > 0 ? "#4ECDC4" : "#8A9BA8" }}/>
+              <span className="text-xs font-medium"
+                style={{ color: upcoming.length > 0 ? "#2BA8A0" : "#8A9BA8" }}>
+                {upcoming.length > 0 ? "Active" : "Inactive"}
+              </span>
             </div>
           </div>
 
           {/* Stats */}
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-4 gap-2">
             {[
-              { label: "Total",     value: appointments.length, accent: "#0D3B44" },
-              { label: "Upcoming",  value: upcoming.length,     accent: "#4ECDC4" },
-              { label: "Completed", value: completed.length,    accent: "#D4A853" },
+              { label: "Total",      value: appointments.length, accent: "#0D3B44" },
+              { label: "Upcoming",   value: upcoming.length,     accent: "#4ECDC4" },
+              { label: "Completed",  value: completed.length,    accent: "#D4A853" },
+              { label: "Rate",       value: `${completionRate}%`,accent: "#2BA8A0" },
             ].map(({ label, value, accent }) => (
               <div key={label} className="rounded-xl p-3 text-center"
                 style={{ background: "white", boxShadow: "0 1px 3px rgba(13,59,68,0.06)" }}>
-                <p className="text-2xl font-semibold"
+                <p className="text-xl font-semibold"
                   style={{ fontFamily: "var(--font-dm-serif)", color: accent }}>
                   {value}
                 </p>
@@ -117,24 +174,28 @@ function ClientDrawer({ client, appointments, onClose }: {
             <p className="text-xs font-semibold uppercase tracking-wider"
               style={{ color: "#8A9BA8" }}>Contact</p>
             {[
-              { Icon: Mail,   val: client.email,  fallback: "No email" },
-              { Icon: Phone,  val: client.phone,  fallback: "No phone" },
-              { Icon: MapPin, val: [client.city, client.country].filter(Boolean).join(", "), fallback: "No location" },
-            ].map(({ Icon, val, fallback }) => (
+              { Icon: Mail,   val: client.email,   href: `mailto:${client.email}`,   fallback: "No email"    },
+              { Icon: Phone,  val: client.phone,   href: `tel:${client.phone}`,      fallback: "No phone"    },
+              { Icon: MapPin, val: [client.city, client.country].filter(Boolean).join(", "), href: null, fallback: "No location" },
+            ].map(({ Icon, val, href, fallback }) => (
               <div key={fallback} className="flex items-center gap-3">
                 <div className="w-7 h-7 rounded-lg flex items-center justify-center"
                   style={{ background: "rgba(13,59,68,0.05)" }}>
                   <Icon size={13} style={{ color: "#8A9BA8" }} />
                 </div>
-                <p className="text-sm" style={{ color: val ? "#22272B" : "#C4C4C4" }}>
-                  {val || fallback}
-                </p>
+                {href && val ? (
+                  <a href={href} className="text-sm hover:underline" style={{ color: "#2BA8A0" }}>{val}</a>
+                ) : (
+                  <p className="text-sm" style={{ color: val ? "#22272B" : "#C4C4C4" }}>
+                    {val || fallback}
+                  </p>
+                )}
               </div>
             ))}
           </div>
 
-          {/* Goals */}
-          {client.goals?.length > 0 && (
+          {/* Wellness goals */}
+          {(client.goals?.length ?? 0) > 0 && (
             <div className="rounded-2xl p-4"
               style={{ background: "white", boxShadow: "0 1px 3px rgba(13,59,68,0.06)" }}>
               <div className="flex items-center gap-2 mb-3">
@@ -143,7 +204,7 @@ function ClientDrawer({ client, appointments, onClose }: {
                   style={{ color: "#8A9BA8" }}>Wellness Goals</p>
               </div>
               <div className="flex flex-wrap gap-2">
-                {client.goals.map(g => (
+                {client.goals!.map(g => (
                   <span key={g} className="px-2.5 py-1 rounded-full text-xs font-medium"
                     style={{ background: "rgba(78,205,196,0.1)", color: "#2BA8A0" }}>
                     {g}
@@ -151,8 +212,9 @@ function ClientDrawer({ client, appointments, onClose }: {
                 ))}
               </div>
               {client.preferredTime && (
-                <p className="text-xs mt-3" style={{ color: "#8A9BA8" }}>
-                  Prefers {client.preferredTime === "morning" ? "morning" : "afternoon"} sessions
+                <p className="text-xs mt-3 flex items-center gap-1" style={{ color: "#8A9BA8" }}>
+                  <Clock size={11}/>
+                  Prefers {client.preferredTime} sessions
                 </p>
               )}
             </div>
@@ -162,54 +224,96 @@ function ClientDrawer({ client, appointments, onClose }: {
           {client.emergencyContact?.name && (
             <div className="rounded-2xl p-4"
               style={{ background: "rgba(232,96,76,0.04)", border: "1px solid rgba(232,96,76,0.12)" }}>
-              <p className="text-xs font-semibold uppercase tracking-wider mb-2"
-                style={{ color: "#8A9BA8" }}>Emergency Contact</p>
+              <div className="flex items-center gap-2 mb-2">
+                <AlertCircle size={13} style={{ color: "#E8604C" }}/>
+                <p className="text-xs font-semibold uppercase tracking-wider"
+                  style={{ color: "#8A9BA8" }}>Emergency Contact</p>
+              </div>
               <p className="text-sm font-medium" style={{ color: "#0D3B44" }}>
                 {client.emergencyContact.name}
               </p>
-              <p className="text-xs" style={{ color: "#8A9BA8" }}>
+              <a href={`tel:${client.emergencyContact.phone}`}
+                className="text-xs hover:underline" style={{ color: "#E8604C" }}>
                 {client.emergencyContact.phone}
-              </p>
+              </a>
             </div>
           )}
 
           {/* Session history */}
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wider mb-3"
-              style={{ color: "#8A9BA8" }}>Session History</p>
-            {appointments.length === 0 ? (
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-xs font-semibold uppercase tracking-wider"
+                style={{ color: "#8A9BA8" }}>Session History</p>
+              {/* Filter pills */}
+              <div className="flex gap-1">
+                {(["all","upcoming","completed"] as const).map(f => (
+                  <button key={f} onClick={() => setApptFilter(f)}
+                    className="px-2.5 py-1 rounded-lg text-xs font-semibold capitalize transition-all"
+                    style={{
+                      background: apptFilter === f ? "#0D3B44" : "rgba(13,59,68,0.05)",
+                      color:      apptFilter === f ? "white"   : "#8A9BA8",
+                    }}>
+                    {f}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {shownAppts.length === 0 ? (
               <div className="rounded-xl p-6 text-center"
                 style={{ background: "white", boxShadow: "0 1px 3px rgba(13,59,68,0.06)" }}>
-                <p className="text-sm" style={{ color: "#C4C4C4" }}>No sessions yet</p>
+                <p className="text-sm" style={{ color: "#C4C4C4" }}>
+                  No {apptFilter === "all" ? "" : apptFilter} sessions
+                </p>
               </div>
             ) : (
               <div className="space-y-2">
-                {appointments.map(appt => (
-                  <div key={appt.id} className="rounded-xl p-4 flex items-center gap-3"
+                {shownAppts.map(appt => (
+                  <div key={appt.id} className="rounded-xl p-4"
                     style={{ background: "white", boxShadow: "0 1px 3px rgba(13,59,68,0.06)" }}>
-                    <div className="w-10 h-10 rounded-xl flex flex-col items-center justify-center flex-shrink-0"
-                      style={{ background: "rgba(13,59,68,0.05)" }}>
-                      <span className="text-xs font-bold leading-none" style={{ color: "#0D3B44" }}>
-                        {new Date(appt.date + "T12:00:00").toLocaleDateString("en-US", { month: "short" })}
-                      </span>
-                      <span className="text-sm font-bold leading-none" style={{ color: "#0D3B44" }}>
-                        {new Date(appt.date + "T12:00:00").getDate()}
-                      </span>
+                    <div className="flex items-center gap-3 mb-2">
+                      {/* Date block */}
+                      <div className="w-10 h-10 rounded-xl flex flex-col items-center justify-center flex-shrink-0"
+                        style={{ background: "rgba(13,59,68,0.05)" }}>
+                        <span className="text-xs font-bold leading-none" style={{ color: "#0D3B44" }}>
+                          {new Date(appt.date + "T12:00:00").toLocaleDateString("en-US", { month: "short" })}
+                        </span>
+                        <span className="text-sm font-bold leading-none" style={{ color: "#0D3B44" }}>
+                          {new Date(appt.date + "T12:00:00").getDate()}
+                        </span>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium truncate" style={{ color: "#0D3B44" }}>
+                          {appt.type}
+                        </p>
+                        <p className="text-xs" style={{ color: "#8A9BA8" }}>
+                          {appt.time} · {appt.duration} min
+                        </p>
+                      </div>
+                      <StatusBadge status={appt.status} />
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium truncate" style={{ color: "#0D3B44" }}>
-                        {appt.type}
-                      </p>
-                      <p className="text-xs" style={{ color: "#8A9BA8" }}>
-                        {appt.time} · {appt.duration} min
-                      </p>
-                    </div>
-                    <StatusBadge status={appt.status} />
+                    {/* Notes */}
+                    {appt.notes && (
+                      <div className="flex items-start gap-2 mt-2 pt-2 border-t"
+                        style={{ borderColor: "rgba(13,59,68,0.06)" }}>
+                        <FileText size={12} className="flex-shrink-0 mt-0.5" style={{ color: "#8A9BA8" }}/>
+                        <p className="text-xs italic" style={{ color: "#4A5568" }}>{appt.notes}</p>
+                      </div>
+                    )}
+                    {/* Meet link */}
+                    {appt.meetLink && (
+                      <a href={appt.meetLink} target="_blank" rel="noopener noreferrer"
+                        className="flex items-center gap-1.5 mt-2 text-xs font-medium hover:underline"
+                        style={{ color: "#4285F4" }}>
+                        <ExternalLink size={11}/> Join Google Meet
+                      </a>
+                    )}
                   </div>
                 ))}
               </div>
             )}
           </div>
+
         </div>
       </div>
     </div>
@@ -217,19 +321,32 @@ function ClientDrawer({ client, appointments, onClose }: {
 }
 
 // ── Client card ────────────────────────────────────────────────────────────
-function ClientCard({ client, apptCount, lastAppt, onClick }: {
-  client: Client; apptCount: number;
-  lastAppt: Appointment | null; onClick: () => void;
+function ClientCard({ client, appts, onClick }: {
+  client: Client; appts: Appointment[]; onClick: () => void;
 }) {
+  const lastAppt   = appts[0] ?? null;
+  const upcoming   = appts.filter(a => ["pending","approved"].includes(a.status));
+  const completed  = appts.filter(a => a.status === "completed");
+  const isActive   = upcoming.length > 0;
+
   return (
     <button onClick={onClick}
-      className="w-full text-left rounded-2xl p-5 transition-all hover:-translate-y-0.5"
+      className="w-full text-left rounded-2xl p-5 transition-all hover:-translate-y-0.5 group"
       style={{ background: "white", boxShadow: "0 1px 4px rgba(13,59,68,0.07)" }}>
       <div className="flex items-start gap-4">
-        <div className="w-11 h-11 rounded-xl flex items-center justify-center text-base font-bold flex-shrink-0"
-          style={{ background: "linear-gradient(135deg, #0D3B44, #1A535C)", color: "white" }}>
-          {client.displayName?.[0]?.toUpperCase() ?? "C"}
+        {/* Avatar */}
+        <div className="relative flex-shrink-0">
+          <div className="w-11 h-11 rounded-xl flex items-center justify-center text-base font-bold"
+            style={{ background: "linear-gradient(135deg, #0D3B44, #1A535C)", color: "white" }}>
+            {client.displayName?.[0]?.toUpperCase() ?? "C"}
+          </div>
+          {/* Active dot */}
+          {isActive && (
+            <span className="absolute -top-1 -right-1 w-3 h-3 rounded-full border-2 border-white"
+              style={{ background: "#4ECDC4" }}/>
+          )}
         </div>
+
         <div className="flex-1 min-w-0">
           <div className="flex items-start justify-between gap-2">
             <div>
@@ -240,37 +357,50 @@ function ClientCard({ client, apptCount, lastAppt, onClick }: {
                 {client.email}
               </p>
             </div>
-            <ChevronRight size={16} className="flex-shrink-0 mt-0.5" style={{ color: "#C4C4C4" }} />
+            <ChevronRight size={16}
+              className="flex-shrink-0 mt-0.5 transition-transform group-hover:translate-x-0.5"
+              style={{ color: "#C4C4C4" }} />
           </div>
-          <div className="flex items-center gap-4 mt-3">
+
+          {/* Meta row */}
+          <div className="flex items-center gap-3 mt-3 flex-wrap">
             <span className="flex items-center gap-1 text-xs" style={{ color: "#8A9BA8" }}>
-              <Calendar size={11} />
-              {apptCount} session{apptCount !== 1 ? "s" : ""}
+              <CheckCircle size={11} style={{ color: "#2BA8A0" }}/>
+              {completed.length} completed
             </span>
+            {upcoming.length > 0 && (
+              <span className="flex items-center gap-1 text-xs font-semibold"
+                style={{ color: "#4ECDC4" }}>
+                <Clock size={11}/>
+                {upcoming.length} upcoming
+              </span>
+            )}
             {client.city && (
               <span className="flex items-center gap-1 text-xs" style={{ color: "#8A9BA8" }}>
-                <MapPin size={11} />{client.city}
+                <MapPin size={11}/>{client.city}
               </span>
             )}
             {lastAppt && (
               <span className="flex items-center gap-1 text-xs" style={{ color: "#8A9BA8" }}>
-                <Clock size={11} />
+                <Calendar size={11}/>
                 {new Date(lastAppt.date + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}
               </span>
             )}
           </div>
-          {client.goals?.length > 0 && (
+
+          {/* Goals */}
+          {(client.goals?.length ?? 0) > 0 && (
             <div className="flex flex-wrap gap-1.5 mt-3">
-              {client.goals.slice(0, 2).map(g => (
+              {client.goals!.slice(0, 2).map(g => (
                 <span key={g} className="px-2 py-0.5 rounded-full text-xs"
                   style={{ background: "rgba(78,205,196,0.08)", color: "#2BA8A0" }}>
                   {g}
                 </span>
               ))}
-              {client.goals.length > 2 && (
+              {client.goals!.length > 2 && (
                 <span className="px-2 py-0.5 rounded-full text-xs"
                   style={{ background: "rgba(13,59,68,0.05)", color: "#8A9BA8" }}>
-                  +{client.goals.length - 2} more
+                  +{client.goals!.length - 2} more
                 </span>
               )}
             </div>
@@ -282,18 +412,21 @@ function ClientCard({ client, apptCount, lastAppt, onClick }: {
 }
 
 // ── Main page ──────────────────────────────────────────────────────────────
+type FilterType = "all" | "active" | "inactive";
+
 export default function DoctorClientsPage() {
-  const { user } = useAuth();
+  const { user }  = useAuth();
   const [clients,  setClients]  = useState<Client[]>([]);
   const [allAppts, setAllAppts] = useState<Record<string, Appointment[]>>({});
   const [loading,  setLoading]  = useState(true);
   const [search,   setSearch]   = useState("");
+  const [filter,   setFilter]   = useState<FilterType>("all");
   const [selected, setSelected] = useState<Client | null>(null);
 
   useEffect(() => {
     if (!user) return;
     (async () => {
-      // Load all appointments for this doctor
+      // ── Step 1: load all appointments for this doctor ──────────────────
       const apptSnap = await getDocs(
         query(
           collection(db, "appointments"),
@@ -308,6 +441,7 @@ export default function DoctorClientsPage() {
       apptSnap.docs.forEach(d => {
         const data = d.data() as any;
         const cid  = data.clientId as string;
+        if (!cid) return;
         clientIds.add(cid);
         if (!apptsByClient[cid]) apptsByClient[cid] = [];
         apptsByClient[cid].push({ id: d.id, ...data } as Appointment);
@@ -315,18 +449,20 @@ export default function DoctorClientsPage() {
 
       setAllAppts(apptsByClient);
 
-      // Load user docs for each unique client
+      // ── Step 2: fetch each client doc by document ID (not a field query) ──
+      // BUG FIX: users collection uses uid as the doc ID, not a "uid" field.
+      // where("uid","==",x) returns nothing. Use getDoc(doc(db,"users",uid)) instead.
       if (clientIds.size > 0) {
         const clientDocs = await Promise.all(
-          [...clientIds].map(uid =>
-            getDocs(query(collection(db, "users"), where("uid", "==", uid)))
-          )
+          [...clientIds].map(uid => getDoc(doc(db, "users", uid)))
         );
         const loaded: Client[] = [];
         clientDocs.forEach(snap => {
-          snap.docs.forEach(d => loaded.push({ uid: d.id, ...d.data() } as Client));
+          if (snap.exists()) {
+            loaded.push({ uid: snap.id, ...snap.data() } as Client);
+          }
         });
-        loaded.sort((a, b) => a.displayName.localeCompare(b.displayName));
+        loaded.sort((a, b) => a.displayName?.localeCompare(b.displayName ?? "") ?? 0);
         setClients(loaded);
       }
 
@@ -334,35 +470,55 @@ export default function DoctorClientsPage() {
     })();
   }, [user]);
 
-  const filtered = clients.filter(c =>
-    c.displayName.toLowerCase().includes(search.toLowerCase()) ||
-    c.email.toLowerCase().includes(search.toLowerCase())
-  );
-
+  // ── Derived stats ────────────────────────────────────────────────────────
   const totalSessions  = Object.values(allAppts).reduce((s, a) => s + a.length, 0);
   const totalCompleted = Object.values(allAppts).reduce((s, a) => s + a.filter(x => x.status === "completed").length, 0);
   const totalUpcoming  = Object.values(allAppts).reduce((s, a) => s + a.filter(x => ["pending","approved"].includes(x.status)).length, 0);
+  const activeClients  = clients.filter(c => (allAppts[c.uid] ?? []).some(a => ["pending","approved"].includes(a.status)));
+
+  // ── Filter + search ──────────────────────────────────────────────────────
+  const filtered = clients.filter(c => {
+    const matchSearch = !search
+      || c.displayName?.toLowerCase().includes(search.toLowerCase())
+      || c.email?.toLowerCase().includes(search.toLowerCase());
+
+    const isActive = (allAppts[c.uid] ?? []).some(a => ["pending","approved"].includes(a.status));
+    const matchFilter = filter === "all"
+      || (filter === "active"   &&  isActive)
+      || (filter === "inactive" && !isActive);
+
+    return matchSearch && matchFilter;
+  });
 
   return (
     <div className="max-w-5xl mx-auto space-y-6">
 
       {/* Header */}
-      <div>
-        <h2 className="text-2xl" style={{ fontFamily: "var(--font-dm-serif)", color: "#0D3B44" }}>
-          Clients
-        </h2>
-        <p className="text-sm mt-0.5" style={{ color: "#8A9BA8" }}>
-          Everyone who has booked a session with you
-        </p>
+      <div className="flex items-start justify-between flex-wrap gap-3">
+        <div>
+          <h2 className="text-2xl" style={{ fontFamily: "var(--font-dm-serif)", color: "#0D3B44" }}>
+            Clients
+          </h2>
+          <p className="text-sm mt-0.5" style={{ color: "#8A9BA8" }}>
+            Everyone who has booked a session with you
+          </p>
+        </div>
+        {activeClients.length > 0 && (
+          <div className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold"
+            style={{ background: "rgba(78,205,196,0.1)", color: "#2BA8A0" }}>
+            <TrendingUp size={14}/>
+            {activeClients.length} active client{activeClients.length !== 1 ? "s" : ""}
+          </div>
+        )}
       </div>
 
       {/* Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         {[
-          { label: "Total Clients",  value: clients.length, accent: "#0D3B44", Icon: Users },
-          { label: "Total Sessions", value: totalSessions,  accent: "#4ECDC4", Icon: Calendar },
-          { label: "Upcoming",       value: totalUpcoming,  accent: "#D4A853", Icon: Clock },
-          { label: "Completed",      value: totalCompleted, accent: "#2BA8A0", Icon: CheckCircle },
+          { label: "Total Clients",  value: clients.length,  accent: "#0D3B44", Icon: Users        },
+          { label: "Total Sessions", value: totalSessions,   accent: "#4ECDC4", Icon: Calendar     },
+          { label: "Upcoming",       value: totalUpcoming,   accent: "#D4A853", Icon: Clock        },
+          { label: "Completed",      value: totalCompleted,  accent: "#2BA8A0", Icon: CheckCircle  },
         ].map(({ label, value, accent, Icon }) => (
           <div key={label} className="rounded-2xl p-4 flex items-center gap-3"
             style={{ background: "white", boxShadow: "0 1px 4px rgba(13,59,68,0.07)" }}>
@@ -381,23 +537,40 @@ export default function DoctorClientsPage() {
         ))}
       </div>
 
-      {/* Search */}
-      <div className="relative">
-        <Search size={15} className="absolute left-4 top-1/2 -translate-y-1/2"
-          style={{ color: "#8A9BA8" }} />
-        <input type="text" value={search} onChange={e => setSearch(e.target.value)}
-          placeholder="Search by name or email..."
-          className="w-full pl-11 pr-4 py-3 rounded-xl text-sm border focus:outline-none"
-          style={{ borderColor: "rgba(13,59,68,0.12)", background: "white" }} />
-        {search && (
-          <button onClick={() => setSearch("")}
-            className="absolute right-4 top-1/2 -translate-y-1/2">
-            <X size={14} style={{ color: "#8A9BA8" }} />
-          </button>
-        )}
+      {/* Search + filter */}
+      <div className="flex gap-3 flex-wrap">
+        <div className="relative flex-1 min-w-[200px]">
+          <Search size={15} className="absolute left-4 top-1/2 -translate-y-1/2"
+            style={{ color: "#8A9BA8" }} />
+          <input type="text" value={search} onChange={e => setSearch(e.target.value)}
+            placeholder="Search by name or email..."
+            className="w-full pl-11 pr-10 py-3 rounded-xl text-sm border focus:outline-none"
+            style={{ borderColor: "rgba(13,59,68,0.12)", background: "white" }} />
+          {search && (
+            <button onClick={() => setSearch("")}
+              className="absolute right-4 top-1/2 -translate-y-1/2">
+              <X size={14} style={{ color: "#8A9BA8" }} />
+            </button>
+          )}
+        </div>
+
+        {/* Active / Inactive filter */}
+        <div className="flex gap-1 p-1 rounded-xl" style={{ background: "rgba(13,59,68,0.06)" }}>
+          {(["all", "active", "inactive"] as const).map(f => (
+            <button key={f} onClick={() => setFilter(f)}
+              className="px-4 py-1.5 rounded-lg text-xs font-semibold capitalize transition-all"
+              style={{
+                background: filter === f ? "white"       : "transparent",
+                color:      filter === f ? "#0D3B44"     : "#8A9BA8",
+                boxShadow:  filter === f ? "0 1px 3px rgba(13,59,68,0.1)" : "none",
+              }}>
+              {f}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {/* List */}
+      {/* Client list */}
       {loading ? (
         <div className="flex items-center justify-center py-16">
           <Loader2 size={28} className="animate-spin" style={{ color: "#4ECDC4" }} />
@@ -410,23 +583,26 @@ export default function DoctorClientsPage() {
             <Users size={24} style={{ color: "#4ECDC4" }} />
           </div>
           <p className="text-sm font-medium mb-1" style={{ color: "#0D3B44" }}>
-            {search ? "No clients found" : "No clients yet"}
+            {search ? "No clients found" : filter !== "all" ? `No ${filter} clients` : "No clients yet"}
           </p>
           <p className="text-xs" style={{ color: "#8A9BA8" }}>
-            {search ? "Try a different name or email." : "Clients will appear here once they book a session."}
+            {search
+              ? "Try a different name or email."
+              : filter !== "all"
+              ? "Try switching to All to see everyone."
+              : "Clients will appear here once they book a session."}
           </p>
         </div>
       ) : (
         <div className="grid gap-3 lg:grid-cols-2">
-          {filtered.map(client => {
-            const appts  = allAppts[client.uid] ?? [];
-            const lastAppt = appts[0] ?? null;
-            return (
-              <ClientCard key={client.uid} client={client}
-                apptCount={appts.length} lastAppt={lastAppt}
-                onClick={() => setSelected(client)} />
-            );
-          })}
+          {filtered.map(client => (
+            <ClientCard
+              key={client.uid}
+              client={client}
+              appts={allAppts[client.uid] ?? []}
+              onClick={() => setSelected(client)}
+            />
+          ))}
         </div>
       )}
 
