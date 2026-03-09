@@ -176,12 +176,21 @@ const STATUS_DOT: Record<string,string> = {
 };
 
 function CalendarTab({ appointments }: { appointments: Appointment[] }) {
-  const [current, setCurrent] = useState(new Date());
+  // ⚠️ Hydration fix: never call new Date() at render time — server is UTC,
+  // browser is America/Port_of_Spain (UTC-4). Set client-side only via useEffect.
+  const [current,  setCurrent]  = useState<Date|null>(null);
+  const [today,    setToday]    = useState<Date|null>(null);
   const [selected, setSelected] = useState<string|null>(null);
 
-  const year  = current.getFullYear();
-  const month = current.getMonth();
-  const today = new Date();
+  useEffect(() => {
+    const now = new Date();
+    setCurrent(now);
+    setToday(now);
+  }, []);
+
+  // Guard: don't render the grid until client date is known
+  const year  = current?.getFullYear() ?? 0;
+  const month = current?.getMonth()    ?? 0;
 
   // Build day grid
   const firstDay   = new Date(year, month, 1).getDay(); // 0=Sun
@@ -204,12 +213,20 @@ function CalendarTab({ appointments }: { appointments: Appointment[] }) {
     return map;
   }, [appointments]);
 
-  const monthLabel = current.toLocaleDateString("en-US",{ month:"long", year:"numeric" });
+  const monthLabel = current
+    ? current.toLocaleDateString("en-US",{ month:"long", year:"numeric" })
+    : "";
 
-  const selectedKey  = selected;
-  const selectedAppts = selectedKey ? (apptsByDate[selectedKey] ?? []) : [];
+  const selectedAppts = selected ? (apptsByDate[selected] ?? []) : [];
 
   const dayNames = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+
+  // Don't render the grid until client-side date is hydrated
+  if (!current || !today) return (
+    <div className="flex items-center justify-center py-24">
+      <Loader2 size={24} className="animate-spin" style={{ color:"#4ECDC4" }}/>
+    </div>
+  );
 
   return (
     <div className="space-y-4">
@@ -245,7 +262,7 @@ function CalendarTab({ appointments }: { appointments: Appointment[] }) {
             if (day === null) return <div key={`e-${i}`}/>;
             const dateStr = `${year}-${String(month+1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
             const dayAppts = apptsByDate[dateStr] ?? [];
-            const isToday  = day===today.getDate() && month===today.getMonth() && year===today.getFullYear();
+            const isToday  = !!today && day===today.getDate() && month===today.getMonth() && year===today.getFullYear();
             const isSelected = dateStr === selected;
 
             return (
@@ -327,8 +344,9 @@ function CalendarTab({ appointments }: { appointments: Appointment[] }) {
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         {[
           { label:"This Month", value:appointments.filter(a=>{
-            const d=new Date(a.date+"T12:00:00"); return d.getMonth()===today.getMonth()&&d.getFullYear()===today.getFullYear();
-          }).length, color:"#0A2E35" },
+              if (!today) return false;
+              const d=new Date(a.date+"T12:00:00"); return d.getMonth()===today.getMonth()&&d.getFullYear()===today.getFullYear();
+            }).length, color:"#0A2E35" },
           { label:"Pending",   value:appointments.filter(a=>a.status==="pending").length,   color:"#D4A853" },
           { label:"Confirmed", value:appointments.filter(a=>a.status==="approved").length,  color:"#4ECDC4" },
           { label:"Completed", value:appointments.filter(a=>a.status==="completed").length, color:"#2BA8A0" },
@@ -795,7 +813,7 @@ export default function DoctorSchedulePage() {
                     <p className="text-xs mb-4" style={{ color:"#8A9BA8" }}>Block specific dates for holidays or leave.</p>
                     <div className="flex gap-2 mb-4">
                       <input type="date" value={newBlockDate} onChange={e=>setNewBlockDate(e.target.value)}
-                        min={new Date().toISOString().split("T")[0]}
+                        min={typeof window !== "undefined" ? new Date().toISOString().split("T")[0] : ""}
                         className="flex-1 px-3 py-2 rounded-xl text-sm border focus:outline-none"
                         style={{ borderColor:"rgba(13,59,68,0.15)", background:"#FAFAFA" }}/>
                       <button onClick={()=>{ if(!newBlockDate||avail.blockedDates.includes(newBlockDate))return; setAvail(a=>({ ...a, blockedDates:[...a.blockedDates,newBlockDate].sort() })); setNewBlockDate(""); }}
