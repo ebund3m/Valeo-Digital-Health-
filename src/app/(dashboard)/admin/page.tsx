@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { collection, getDocs, query, orderBy, limit } from "firebase/firestore";
+import { collection, getDocs, query, orderBy } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import {
   Users, DollarSign, Calendar, TrendingUp, ArrowRight,
@@ -10,15 +10,12 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 
-// ── Types ──────────────────────────────────────────────────────────────────
 type UserDoc     = { uid: string; role: string; displayName: string; email: string; createdAt: any; isActive?: boolean; };
 type Appointment = { id: string; status: string; sessionType: string; createdAt: any; clientId: string; doctorId: string; };
 type Payment     = { id: string; amount: number; status: string; createdAt: any; source: "online"|"manual"; };
 
-// ── Palette ────────────────────────────────────────────────────────────────
 const C = { ocean:"#0D3B44", dark:"#1A1A2E", teal:"#4ECDC4", coral:"#E8604C", gold:"#D4A853", slate:"#8A9BA8" };
 
-// ── Helpers ────────────────────────────────────────────────────────────────
 function toDate(ts: any): Date|null {
   if (!ts) return null;
   if (ts.toDate) return ts.toDate();
@@ -36,7 +33,6 @@ function timeAgo(d: Date): string {
 }
 const fmt = (n: number) => new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:0}).format(n);
 
-// ── Stat Card ──────────────────────────────────────────────────────────────
 function StatCard({ label, value, sub, icon: Icon, accent, trend }: {
   label: string; value: string|number; sub: string;
   icon: React.ElementType; accent: string;
@@ -63,7 +59,6 @@ function StatCard({ label, value, sub, icon: Icon, accent, trend }: {
   );
 }
 
-// ── Quick Action ───────────────────────────────────────────────────────────
 function QuickAction({ href, icon: Icon, label, accent }: { href:string; icon:React.ElementType; label:string; accent:string }) {
   return (
     <Link href={href} className="group flex items-center gap-3 p-3 rounded-xl transition-all hover:-translate-y-0.5"
@@ -77,14 +72,13 @@ function QuickAction({ href, icon: Icon, label, accent }: { href:string; icon:Re
   );
 }
 
-// ── Feed event ────────────────────────────────────────────────────────────
 type FeedEvent = { id:string; label:string; sub:string; time:Date; type:"user"|"appt"|"payment"; };
 
 function FeedItem({ event }: { event: FeedEvent }) {
   const cfg = {
-    user:    { Icon: UserPlus,     color: C.teal  },
-    appt:    { Icon: Calendar,     color: C.coral },
-    payment: { Icon: Banknote,     color: C.gold  },
+    user:    { Icon: UserPlus, color: C.teal  },
+    appt:    { Icon: Calendar, color: C.coral },
+    payment: { Icon: Banknote, color: C.gold  },
   }[event.type];
   return (
     <div className="flex items-start gap-3 py-3 border-b last:border-0" style={{ borderColor:"rgba(26,26,46,0.05)" }}>
@@ -100,20 +94,26 @@ function FeedItem({ event }: { event: FeedEvent }) {
   );
 }
 
-// ── Main ───────────────────────────────────────────────────────────────────
 export default function AdminDashboard() {
   const [users,    setUsers]    = useState<UserDoc[]>([]);
   const [appts,    setAppts]    = useState<Appointment[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [loading,  setLoading]  = useState(true);
+  // ⬇ Fix: date rendered client-side only to prevent hydration mismatch
+  const [today, setToday] = useState("");
 
   useEffect(() => {
+    // Set date only on client — avoids server/client timezone mismatch
+    setToday(new Date().toLocaleDateString("en-US", {
+      weekday:"long", month:"long", day:"numeric", year:"numeric"
+    }));
+
     (async () => {
       const [uSnap, aSnap, pSnap, mpSnap] = await Promise.all([
         getDocs(collection(db, "users")),
-        getDocs(query(collection(db, "appointments"), orderBy("createdAt","desc"))),
-        getDocs(query(collection(db, "payments"),       orderBy("createdAt","desc"))),
-        getDocs(query(collection(db, "manualPayments"), orderBy("createdAt","desc"))),
+        getDocs(query(collection(db, "appointments"),    orderBy("createdAt","desc"))),
+        getDocs(query(collection(db, "payments"),        orderBy("createdAt","desc"))),
+        getDocs(query(collection(db, "manualPayments"),  orderBy("createdAt","desc"))),
       ]);
       setUsers(uSnap.docs.map(d => ({ uid:d.id, ...d.data() }) as UserDoc));
       setAppts(aSnap.docs.map(d => ({ id:d.id, ...d.data() }) as Appointment));
@@ -131,7 +131,6 @@ export default function AdminDashboard() {
     })();
   }, []);
 
-  // ── Derived ───────────────────────────────────────────────────────────────
   const now        = new Date();
   const thisMonthK = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
   const monthKey   = (d: Date) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
@@ -141,36 +140,29 @@ export default function AdminDashboard() {
   const completedAppts = appts.filter(a => a.status==="completed");
   const pendingAppts   = appts.filter(a => a.status==="pending");
 
-  const completedPay   = payments.filter(p => p.status==="completed");
-  const totalRevenue   = completedPay.reduce((s,p) => s+p.amount, 0);
-  const onlineRevenue  = completedPay.filter(p => p.source==="online").reduce((s,p) => s+p.amount, 0);
-  const manualRevenue  = completedPay.filter(p => p.source==="manual").reduce((s,p) => s+p.amount, 0);
+  const completedPay  = payments.filter(p => p.status==="completed");
+  const totalRevenue  = completedPay.reduce((s,p) => s+p.amount, 0);
+  const onlineRevenue = completedPay.filter(p => p.source==="online").reduce((s,p) => s+p.amount, 0);
+  const manualRevenue = completedPay.filter(p => p.source==="manual").reduce((s,p) => s+p.amount, 0);
 
   const sessionsThisMonth = completedAppts.filter(a => { const d=toDate(a.createdAt); return d && monthKey(d)===thisMonthK; }).length;
   const newUsersThisMonth = clients.filter(u => { const d=toDate(u.createdAt); return d && monthKey(d)===thisMonthK; }).length;
   const revenueThisMonth  = completedPay.filter(p => { const d=toDate(p.createdAt); return d && monthKey(d)===thisMonthK; }).reduce((s,p)=>s+p.amount,0);
 
-  // Activity feed — last 8 events merged and sorted
   const feedEvents: FeedEvent[] = [];
-
-  clients.slice(0, 10).forEach(u => {
+  clients.slice(0,10).forEach(u => {
     const d = toDate(u.createdAt);
     if (d) feedEvents.push({ id:"u-"+u.uid, label:`${u.displayName||u.email} joined`, sub:"New client registered", time:d, type:"user" });
   });
-
-  appts.slice(0, 10).forEach(a => {
+  appts.slice(0,10).forEach(a => {
     const d = toDate(a.createdAt);
     if (d) feedEvents.push({ id:"a-"+a.id, label:`${a.sessionType||"Session"} booked`, sub:`Status: ${a.status}`, time:d, type:"appt" });
   });
-
-  payments.filter(p => p.status==="completed").slice(0, 10).forEach(p => {
+  completedPay.slice(0,10).forEach(p => {
     const d = toDate(p.createdAt);
     if (d) feedEvents.push({ id:"p-"+p.id, label:`Payment received — ${fmt(p.amount)}`, sub:p.source==="manual"?"Manual / Cash":"Online (WiPay)", time:d, type:"payment" });
   });
-
-  const feed = feedEvents.sort((a,b) => b.time.getTime()-a.time.getTime()).slice(0, 8);
-
-  const today = now.toLocaleDateString("en-US",{ weekday:"long", month:"long", day:"numeric", year:"numeric" });
+  const feed = feedEvents.sort((a,b) => b.time.getTime()-a.time.getTime()).slice(0,8);
 
   if (loading) return (
     <div className="flex items-center justify-center py-24">
@@ -188,7 +180,10 @@ export default function AdminDashboard() {
           style={{ background:"radial-gradient(circle at 80% 50%, #E8604C, transparent 70%)" }}/>
         <div className="relative z-10 flex items-start justify-between flex-wrap gap-4">
           <div>
-            <p className="text-sm mb-1" style={{ color:"rgba(255,255,255,0.45)" }}>{today}</p>
+            {/* Render date only after client mount — no hydration mismatch */}
+            <p className="text-sm mb-1" style={{ color:"rgba(255,255,255,0.45)" }}>
+              {today || <span className="opacity-0">–</span>}
+            </p>
             <h2 className="text-2xl text-white mb-2" style={{ fontFamily:"var(--font-dm-serif)" }}>Platform Overview</h2>
             <p className="text-sm" style={{ color:"rgba(255,255,255,0.55)" }}>
               The Valeo Experience is <span className="text-white font-semibold">operational</span>. All systems normal.
@@ -204,7 +199,9 @@ export default function AdminDashboard() {
               <Link href="/admin/assignments" className="flex items-center gap-2 px-4 py-2 rounded-xl transition-opacity hover:opacity-80"
                 style={{ background:"rgba(232,96,76,0.15)", border:"1px solid rgba(232,96,76,0.3)" }}>
                 <AlertCircle size={13} style={{ color:C.coral }}/>
-                <span className="text-sm font-medium" style={{ color:C.coral }}>{pendingAppts.length} pending appointment{pendingAppts.length!==1?"s":""}</span>
+                <span className="text-sm font-medium" style={{ color:C.coral }}>
+                  {pendingAppts.length} pending appointment{pendingAppts.length!==1?"s":""}
+                </span>
               </Link>
             )}
           </div>
@@ -213,13 +210,13 @@ export default function AdminDashboard() {
 
       {/* KPI cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard label="Total Clients"  value={clients.length}          sub={`+${newUsersThisMonth} this month`}       icon={Users}       accent={C.teal}  trend={{ value:`+${newUsersThisMonth} this month`, positive:true }}/>
-        <StatCard label="Active Doctors" value={doctors.length}          sub="Verified practitioners"                   icon={Stethoscope} accent={C.ocean} />
-        <StatCard label="Sessions"       value={completedAppts.length}   sub={`${sessionsThisMonth} this month`}        icon={Calendar}    accent={C.coral} trend={{ value:`${sessionsThisMonth} this month`, positive:true }}/>
-        <StatCard label="Revenue"        value={fmt(totalRevenue)}       sub={`${fmt(revenueThisMonth)} this month`}    icon={DollarSign}  accent={C.gold}  trend={{ value:`${fmt(revenueThisMonth)} this month`, positive:true }}/>
+        <StatCard label="Total Clients"  value={clients.length}        sub={`+${newUsersThisMonth} this month`}    icon={Users}       accent={C.teal}  trend={{ value:`+${newUsersThisMonth} this month`, positive:true }}/>
+        <StatCard label="Active Doctors" value={doctors.length}        sub="Verified practitioners"                icon={Stethoscope} accent={C.ocean} />
+        <StatCard label="Sessions"       value={completedAppts.length} sub={`${sessionsThisMonth} this month`}     icon={Calendar}    accent={C.coral} trend={{ value:`${sessionsThisMonth} this month`, positive:true }}/>
+        <StatCard label="Revenue"        value={fmt(totalRevenue)}     sub={`${fmt(revenueThisMonth)} this month`} icon={DollarSign}  accent={C.gold}  trend={{ value:`${fmt(revenueThisMonth)} this month`, positive:true }}/>
       </div>
 
-      {/* Revenue split pills */}
+      {/* Revenue split */}
       <div className="grid grid-cols-2 gap-3">
         <div className="rounded-2xl p-4 flex items-center gap-4" style={{ background:"white", boxShadow:"0 1px 4px rgba(26,26,46,0.07)" }}>
           <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background:C.teal+"15" }}>
@@ -243,8 +240,6 @@ export default function AdminDashboard() {
 
       {/* Activity feed + Quick Actions */}
       <div className="grid lg:grid-cols-3 gap-4">
-
-        {/* Activity feed */}
         <div className="lg:col-span-2 rounded-2xl p-5" style={{ background:"white", boxShadow:"0 1px 4px rgba(26,26,46,0.07)" }}>
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-sm font-semibold uppercase tracking-wider" style={{ color:C.slate }}>Recent Activity</h3>
@@ -259,13 +254,10 @@ export default function AdminDashboard() {
               <p className="text-xs" style={{ color:C.slate }}>User registrations, bookings, and payments will appear here.</p>
             </div>
           ) : (
-            <div className="divide-y" style={{ divideColor:"rgba(26,26,46,0.05)" }}>
-              {feed.map(event => <FeedItem key={event.id} event={event}/>)}
-            </div>
+            <div>{feed.map(event => <FeedItem key={event.id} event={event}/>)}</div>
           )}
         </div>
 
-        {/* Quick actions + system health */}
         <div className="space-y-3">
           <h3 className="text-sm font-semibold uppercase tracking-wider px-1" style={{ color:C.slate }}>Quick Actions</h3>
           <QuickAction href="/admin/users"         icon={Users}       label="Manage Users"      accent={C.teal}  />
@@ -274,8 +266,6 @@ export default function AdminDashboard() {
           <QuickAction href="/admin/analytics"     icon={TrendingUp}  label="Analytics"         accent={C.coral} />
           <QuickAction href="/admin/announcements" icon={Activity}    label="Announcements"     accent="#9B59B6" />
           <QuickAction href="/admin/settings"      icon={Settings}    label="Platform Settings" accent={C.dark}  />
-
-          {/* System health */}
           <div className="rounded-xl p-4" style={{ background:"rgba(26,26,46,0.03)", border:"1px solid rgba(26,26,46,0.08)" }}>
             <p className="text-xs font-semibold uppercase tracking-wider mb-3" style={{ color:C.slate }}>System Health</p>
             {[
@@ -299,10 +289,10 @@ export default function AdminDashboard() {
       {/* Bottom summary cards */}
       <div className="grid lg:grid-cols-4 gap-4">
         {[
-          { label:"Clients",           count:clients.length,       icon:Users,       accent:C.teal,  desc:"Registered clients",   href:"/admin/users" },
-          { label:"Doctors",           count:doctors.length,       icon:Stethoscope, accent:C.ocean, desc:"Active practitioners",  href:"/admin/users" },
-          { label:"Pending",           count:pendingAppts.length,  icon:Clock,       accent:C.coral, desc:"Awaiting approval",     href:"/admin/assignments" },
-          { label:"Sessions Complete", count:completedAppts.length,icon:CheckCircle, accent:C.gold,  desc:"All time",             href:"/admin/analytics" },
+          { label:"Clients",           count:clients.length,        icon:Users,       accent:C.teal,  desc:"Registered clients",  href:"/admin/users"        },
+          { label:"Doctors",           count:doctors.length,        icon:Stethoscope, accent:C.ocean, desc:"Active practitioners", href:"/admin/users"        },
+          { label:"Pending",           count:pendingAppts.length,   icon:Clock,       accent:C.coral, desc:"Awaiting approval",    href:"/admin/assignments"  },
+          { label:"Sessions Complete", count:completedAppts.length, icon:CheckCircle, accent:C.gold,  desc:"All time",            href:"/admin/analytics"    },
         ].map(({ label, count, icon: Icon, accent, desc, href }) => (
           <Link key={label} href={href}
             className="group rounded-2xl p-5 flex items-center gap-4 transition-all hover:-translate-y-0.5"
