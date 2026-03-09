@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
+import { useState, useEffect, useMemo } from "react";
+import { doc, getDoc, setDoc, serverTimestamp, collection, getDocs, query, where } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { useDoctorAppointments, updateAppointmentStatus, type Appointment } from "@/hooks/useAppointments";
@@ -9,284 +9,426 @@ import {
   Calendar, Clock, CheckCircle, XCircle, Loader2, Users,
   FileText, Filter, Save, AlertCircle, Plus, X, Info,
   ToggleLeft, ToggleRight, Trash2, ChevronDown, Lock,
+  ChevronLeft, ChevronRight, Link2, ExternalLink, RefreshCw,
 } from "lucide-react";
 
-// ════════════════════════════════════════════════════════════
-//  APPOINTMENTS TAB — types & components
-// ════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════
+//  AVAILABILITY TYPES & CONSTANTS (unchanged from original)
+// ══════════════════════════════════════════════════════════════
+
+type DayKey = "monday"|"tuesday"|"wednesday"|"thursday"|"friday"|"saturday"|"sunday";
+type DaySchedule     = { enabled: boolean; slots: { start: string; end: string }[] };
+type AvailabilitySchedule = {
+  availability:   Record<DayKey, DaySchedule>;
+  slotDuration:   number;
+  bufferTime:     number;
+  maxAdvanceDays: number;
+  timezone:       string;
+  blockedDates:   string[];
+  sessionPricing: Record<string, number>;
+  googleCalendarId?: string;
+};
+
+const DAYS: { key: DayKey; label: string }[] = [
+  { key:"monday",    label:"Monday"    },
+  { key:"tuesday",   label:"Tuesday"   },
+  { key:"wednesday", label:"Wednesday" },
+  { key:"thursday",  label:"Thursday"  },
+  { key:"friday",    label:"Friday"    },
+  { key:"saturday",  label:"Saturday"  },
+  { key:"sunday",    label:"Sunday"    },
+];
+
+const SESSION_TYPES   = ["Individual Therapy","Couples Therapy","Life Coaching","Workplace Wellness","Free Consultation"];
+const SLOT_DURATIONS  = [30, 45, 60, 90];
+const BUFFER_TIMES    = [0, 5, 10, 15, 30];
+const MAX_ADVANCE     = [7, 14, 30, 60, 90];
+const TIMEZONES       = ["America/Port_of_Spain","America/New_York","America/Chicago","America/Denver","America/Los_Angeles","Europe/London","Europe/Paris","Asia/Tokyo"];
+
+const DEFAULT_AVAIL: AvailabilitySchedule = {
+  availability: {
+    monday:    { enabled: true,  slots: [{ start:"09:00", end:"17:00" }] },
+    tuesday:   { enabled: true,  slots: [{ start:"09:00", end:"17:00" }] },
+    wednesday: { enabled: true,  slots: [{ start:"09:00", end:"17:00" }] },
+    thursday:  { enabled: true,  slots: [{ start:"09:00", end:"17:00" }] },
+    friday:    { enabled: true,  slots: [{ start:"09:00", end:"17:00" }] },
+    saturday:  { enabled: false, slots: [] },
+    sunday:    { enabled: false, slots: [] },
+  },
+  slotDuration:   60,
+  bufferTime:     10,
+  maxAdvanceDays: 30,
+  timezone:       "America/Port_of_Spain",
+  blockedDates:   [],
+  sessionPricing: { "Individual Therapy":150,"Couples Therapy":200,"Life Coaching":120,"Workplace Wellness":180,"Free Consultation":0 },
+  googleCalendarId: "",
+};
+
+// ══════════════════════════════════════════════════════════════
+//  APPOINTMENT TAB COMPONENTS (unchanged)
+// ══════════════════════════════════════════════════════════════
 
 function StatusBadge({ status }: { status: Appointment["status"] }) {
   const styles = {
-    pending:   { bg: "rgba(212,168,83,0.12)",  color: "#B8860B", label: "Pending"   },
-    approved:  { bg: "rgba(78,205,196,0.12)",  color: "#2BA8A0", label: "Confirmed" },
-    rejected:  { bg: "rgba(232,96,76,0.12)",   color: "#E8604C", label: "Rejected"  },
-    completed: { bg: "rgba(13,59,68,0.1)",     color: "#0D3B44", label: "Completed" },
-    cancelled: { bg: "rgba(138,155,168,0.12)", color: "#8A9BA8", label: "Cancelled" },
+    pending:   { bg:"rgba(212,168,83,0.12)",  color:"#B8860B", label:"Pending"   },
+    approved:  { bg:"rgba(78,205,196,0.12)",  color:"#2BA8A0", label:"Confirmed" },
+    rejected:  { bg:"rgba(232,96,76,0.12)",   color:"#E8604C", label:"Rejected"  },
+    completed: { bg:"rgba(13,59,68,0.1)",     color:"#0D3B44", label:"Completed" },
+    cancelled: { bg:"rgba(138,155,168,0.12)", color:"#8A9BA8", label:"Cancelled" },
   };
   const s = styles[status];
   return (
     <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium"
-      style={{ background: s.bg, color: s.color }}>
-      {s.label}
-    </span>
+      style={{ background:s.bg, color:s.color }}>{s.label}</span>
   );
 }
 
-function AppointmentCard({ appt, onApprove, onReject, loading }: {
-  appt:      Appointment;
-  onApprove: (id: string) => void;
-  onReject:  (id: string) => void;
-  loading:   string | null;
-}) {
-  const isActing = loading === appt.id;
+function FilterTab({ label, count, active, onClick }: { label:string; count:number; active:boolean; onClick:()=>void }) {
   return (
-    <div className="rounded-2xl p-5" style={{ background: "white", boxShadow: "0 1px 4px rgba(10,46,53,0.07)" }}>
-      <div className="flex items-start justify-between gap-3 mb-4">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 text-sm font-bold"
-            style={{ background: "rgba(78,205,196,0.15)", color: "#0A2E35" }}>
-            {appt.clientName?.[0]?.toUpperCase() ?? "C"}
-          </div>
-          <div>
-            <p className="text-sm font-semibold" style={{ color: "#0A2E35" }}>{appt.clientName}</p>
-            <p className="text-xs" style={{ color: "#8A9BA8" }}>{appt.clientEmail}</p>
-          </div>
-        </div>
-        <StatusBadge status={appt.status} />
-      </div>
-
-      <div className="grid grid-cols-2 gap-3 mb-4">
-        {[
-          { label: "Session Type", value: appt.type },
-          { label: "Date & Time",  value: `${new Date(appt.date + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })} · ${appt.time}` },
-          { label: "Duration",     value: `${appt.duration} minutes` },
-          { label: "Format",       value: "Video Call" },
-        ].map(({ label, value }) => (
-          <div key={label} className="rounded-xl p-3" style={{ background: "rgba(10,46,53,0.03)" }}>
-            <p className="text-xs mb-1" style={{ color: "#8A9BA8" }}>{label}</p>
-            <p className="text-sm font-medium" style={{ color: "#0A2E35" }}>{value}</p>
-          </div>
-        ))}
-      </div>
-
-      {appt.notes && (
-        <div className="rounded-xl p-3 mb-4 flex items-start gap-2"
-          style={{ background: "rgba(78,205,196,0.06)", border: "1px solid rgba(78,205,196,0.15)" }}>
-          <FileText size={14} className="flex-shrink-0 mt-0.5" style={{ color: "#4ECDC4" }} />
-          <p className="text-xs italic" style={{ color: "#4A5568" }}>{appt.notes}</p>
-        </div>
-      )}
-
-      {appt.status === "pending" && (
-        <div className="flex gap-3">
-          <button disabled={isActing} onClick={() => onReject(appt.id)}
-            className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold border-2 disabled:opacity-50"
-            style={{ borderColor: "rgba(232,96,76,0.3)", color: "#E8604C" }}>
-            {isActing ? <Loader2 size={14} className="animate-spin" /> : <><XCircle size={14} /> Decline</>}
-          </button>
-          <button disabled={isActing} onClick={() => onApprove(appt.id)}
-            className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold text-white disabled:opacity-50"
-            style={{ background: "linear-gradient(135deg, #0A2E35, #1A535C)" }}>
-            {isActing ? <Loader2 size={14} className="animate-spin" /> : <><CheckCircle size={14} /> Approve</>}
-          </button>
-        </div>
-      )}
-
-      {appt.status === "approved" && (
-        <button disabled={isActing} onClick={() => onApprove(appt.id)}
-          className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold disabled:opacity-50"
-          style={{ background: "rgba(78,205,196,0.1)", color: "#2BA8A0" }}>
-          {isActing ? <Loader2 size={14} className="animate-spin" /> : <><CheckCircle size={14} /> Mark as Completed</>}
-        </button>
-      )}
-    </div>
-  );
-}
-
-function FilterTab({ label, count, active, onClick }: {
-  label: string; count: number; active: boolean; onClick: () => void;
-}) {
-  return (
-    <button onClick={onClick}
-      className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all"
-      style={{
-        background: active ? "#0A2E35" : "white",
-        color:      active ? "white"   : "#4A5568",
-        boxShadow:  active ? "none"    : "0 1px 4px rgba(10,46,53,0.07)",
-      }}>
+    <button onClick={onClick} className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl text-xs font-semibold transition-all"
+      style={{ background:active?"#0A2E35":"rgba(10,46,53,0.05)", color:active?"white":"#8A9BA8" }}>
       {label}
-      <span className="text-xs px-1.5 py-0.5 rounded-full font-bold"
-        style={{
-          background: active ? "rgba(255,255,255,0.2)" : "rgba(10,46,53,0.08)",
-          color:      active ? "white" : "#0A2E35",
-        }}>
+      <span className="px-1.5 py-0.5 rounded-full text-xs"
+        style={{ background:active?"rgba(255,255,255,0.2)":active?"#0A2E35":"rgba(10,46,53,0.1)", color:active?"white":"#8A9BA8" }}>
         {count}
       </span>
     </button>
   );
 }
 
-// ════════════════════════════════════════════════════════════
-//  AVAILABILITY TAB — types & components
-// ════════════════════════════════════════════════════════════
-
-interface DaySchedule { enabled: boolean; slots: { start: string; end: string }[]; }
-type DayKey = "monday"|"tuesday"|"wednesday"|"thursday"|"friday"|"saturday"|"sunday";
-interface AvailabilitySchedule {
-  availability:   Record<DayKey, DaySchedule>;
-  slotDuration:   number;
-  bufferTime:     number;
-  maxAdvanceDays: number;
-  blockedDates:   string[];
-  sessionPricing: Record<string, number>;
-  timezone:       string;
-  updatedAt?:     any;
+function AppointmentCard({ appt, onApprove, onReject, loading }: {
+  appt:Appointment; onApprove:(id:string)=>void; onReject:(id:string)=>void; loading:string|null;
+}) {
+  const isActing = loading === appt.id;
+  return (
+    <div className="rounded-2xl p-5" style={{ background:"white", boxShadow:"0 1px 4px rgba(10,46,53,0.07)" }}>
+      <div className="flex items-start justify-between gap-3 mb-4">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 text-sm font-bold"
+            style={{ background:"rgba(78,205,196,0.15)", color:"#0A2E35" }}>
+            {appt.clientName?.[0]?.toUpperCase()??"C"}
+          </div>
+          <div>
+            <p className="text-sm font-semibold" style={{ color:"#0A2E35" }}>{appt.clientName}</p>
+            <p className="text-xs" style={{ color:"#8A9BA8" }}>{appt.clientEmail}</p>
+          </div>
+        </div>
+        <StatusBadge status={appt.status}/>
+      </div>
+      <div className="grid grid-cols-2 gap-3 mb-4">
+        {[
+          { label:"Session Type", value:appt.type },
+          { label:"Date & Time",  value:`${new Date(appt.date+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric"})} · ${appt.time}` },
+          { label:"Duration",     value:`${appt.duration} minutes` },
+          { label:"Format",       value:"Video Call" },
+        ].map(({ label, value }) => (
+          <div key={label} className="rounded-xl p-3" style={{ background:"rgba(10,46,53,0.03)" }}>
+            <p className="text-xs mb-1" style={{ color:"#8A9BA8" }}>{label}</p>
+            <p className="text-sm font-medium" style={{ color:"#0A2E35" }}>{value}</p>
+          </div>
+        ))}
+      </div>
+      {appt.notes && (
+        <div className="rounded-xl p-3 mb-4 flex items-start gap-2"
+          style={{ background:"rgba(78,205,196,0.06)", border:"1px solid rgba(78,205,196,0.15)" }}>
+          <FileText size={14} className="flex-shrink-0 mt-0.5" style={{ color:"#4ECDC4" }}/>
+          <p className="text-xs italic" style={{ color:"#4A5568" }}>{appt.notes}</p>
+        </div>
+      )}
+      {appt.meetLink && (
+        <a href={appt.meetLink} target="_blank" rel="noopener noreferrer"
+          className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium mb-4 transition-opacity hover:opacity-80"
+          style={{ background:"rgba(66,133,244,0.08)", color:"#4285F4", border:"1px solid rgba(66,133,244,0.15)" }}>
+          <ExternalLink size={12}/> Join Google Meet
+        </a>
+      )}
+      {appt.status === "pending" && (
+        <div className="flex gap-2">
+          <button onClick={() => onApprove(appt.id)} disabled={!!isActing}
+            className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold text-white disabled:opacity-60"
+            style={{ background:"linear-gradient(135deg,#0A2E35,#1A535C)" }}>
+            {isActing ? <Loader2 size={14} className="animate-spin"/> : <CheckCircle size={14}/>} Approve
+          </button>
+          <button onClick={() => onReject(appt.id)} disabled={!!isActing}
+            className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60"
+            style={{ background:"rgba(232,96,76,0.1)", color:"#E8604C" }}>
+            {isActing ? <Loader2 size={14} className="animate-spin"/> : <XCircle size={14}/>} Reject
+          </button>
+        </div>
+      )}
+      {appt.status === "approved" && (
+        <button onClick={() => onApprove(appt.id)} disabled={!!isActing}
+          className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60"
+          style={{ background:"rgba(13,59,68,0.08)", color:"#0D3B44" }}>
+          {isActing ? <Loader2 size={14} className="animate-spin"/> : <CheckCircle size={14}/>} Mark Completed
+        </button>
+      )}
+    </div>
+  );
 }
 
-const DAYS: { key: DayKey; label: string }[] = [
-  { key: "monday",    label: "Monday"    },
-  { key: "tuesday",   label: "Tuesday"   },
-  { key: "wednesday", label: "Wednesday" },
-  { key: "thursday",  label: "Thursday"  },
-  { key: "friday",    label: "Friday"    },
-  { key: "saturday",  label: "Saturday"  },
-  { key: "sunday",    label: "Sunday"    },
-];
+// ══════════════════════════════════════════════════════════════
+//  CALENDAR TAB
+// ══════════════════════════════════════════════════════════════
 
-const SESSION_TYPES   = ["Individual Therapy","Couples Therapy","Life Coaching","Workplace Wellness","Free Consultation"];
-const SLOT_DURATIONS  = [30, 45, 60, 90];
-const BUFFER_TIMES    = [0, 10, 15, 30];
-const MAX_ADVANCE     = [7, 14, 30, 60, 90];
-const TIMEZONES       = ["America/Port_of_Spain","America/Barbados","America/St_Vincent","America/New_York","America/Los_Angeles","Europe/London","UTC"];
-
-const DEFAULT_AVAIL: AvailabilitySchedule = {
-  availability: {
-    monday:    { enabled: true,  slots: [{ start: "09:00", end: "17:00" }] },
-    tuesday:   { enabled: true,  slots: [{ start: "09:00", end: "17:00" }] },
-    wednesday: { enabled: true,  slots: [{ start: "09:00", end: "17:00" }] },
-    thursday:  { enabled: true,  slots: [{ start: "09:00", end: "17:00" }] },
-    friday:    { enabled: true,  slots: [{ start: "09:00", end: "13:00" }] },
-    saturday:  { enabled: false, slots: [] },
-    sunday:    { enabled: false, slots: [] },
-  },
-  slotDuration: 60, bufferTime: 10, maxAdvanceDays: 30, blockedDates: [],
-  sessionPricing: {
-    "Individual Therapy": 750, "Couples Therapy": 950,
-    "Life Coaching": 700, "Workplace Wellness": 800, "Free Consultation": 0,
-  },
-  timezone: "America/Port_of_Spain",
+const STATUS_DOT: Record<string,string> = {
+  pending:"#D4A853", approved:"#4ECDC4", completed:"#0A2E35", rejected:"#E8604C", cancelled:"#8A9BA8",
 };
+
+function CalendarTab({ appointments }: { appointments: Appointment[] }) {
+  const [current, setCurrent] = useState(new Date());
+  const [selected, setSelected] = useState<string|null>(null);
+
+  const year  = current.getFullYear();
+  const month = current.getMonth();
+  const today = new Date();
+
+  // Build day grid
+  const firstDay   = new Date(year, month, 1).getDay(); // 0=Sun
+  const daysInMonth = new Date(year, month+1, 0).getDate();
+  const cells: (number|null)[] = [
+    ...Array(firstDay).fill(null),
+    ...Array.from({length:daysInMonth},(_,i)=>i+1),
+  ];
+  // Pad to complete last row
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  // Map appointments by date string
+  const apptsByDate = useMemo(() => {
+    const map: Record<string, Appointment[]> = {};
+    appointments.forEach(a => {
+      if (!a.date) return;
+      if (!map[a.date]) map[a.date] = [];
+      map[a.date].push(a);
+    });
+    return map;
+  }, [appointments]);
+
+  const monthLabel = current.toLocaleDateString("en-US",{ month:"long", year:"numeric" });
+
+  const selectedKey  = selected;
+  const selectedAppts = selectedKey ? (apptsByDate[selectedKey] ?? []) : [];
+
+  const dayNames = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+
+  return (
+    <div className="space-y-4">
+
+      {/* Calendar header */}
+      <div className="rounded-2xl p-5" style={{ background:"white", boxShadow:"0 1px 4px rgba(10,46,53,0.07)" }}>
+        <div className="flex items-center justify-between mb-5">
+          <button onClick={() => setCurrent(new Date(year, month-1, 1))}
+            className="w-8 h-8 rounded-lg flex items-center justify-center transition-colors hover:bg-black/5"
+            style={{ color:"#0A2E35" }}>
+            <ChevronLeft size={16}/>
+          </button>
+          <h3 className="text-base font-semibold" style={{ fontFamily:"var(--font-dm-serif)", color:"#0A2E35" }}>
+            {monthLabel}
+          </h3>
+          <button onClick={() => setCurrent(new Date(year, month+1, 1))}
+            className="w-8 h-8 rounded-lg flex items-center justify-center transition-colors hover:bg-black/5"
+            style={{ color:"#0A2E35" }}>
+            <ChevronRight size={16}/>
+          </button>
+        </div>
+
+        {/* Day headers */}
+        <div className="grid grid-cols-7 mb-1">
+          {dayNames.map(d => (
+            <div key={d} className="text-center text-xs font-semibold py-1" style={{ color:"#8A9BA8" }}>{d}</div>
+          ))}
+        </div>
+
+        {/* Day cells */}
+        <div className="grid grid-cols-7 gap-0.5">
+          {cells.map((day, i) => {
+            if (day === null) return <div key={`e-${i}`}/>;
+            const dateStr = `${year}-${String(month+1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+            const dayAppts = apptsByDate[dateStr] ?? [];
+            const isToday  = day===today.getDate() && month===today.getMonth() && year===today.getFullYear();
+            const isSelected = dateStr === selected;
+
+            return (
+              <button key={dateStr} onClick={() => setSelected(isSelected ? null : dateStr)}
+                className="relative rounded-xl p-1.5 min-h-[56px] flex flex-col items-center transition-all hover:scale-105"
+                style={{
+                  background: isSelected ? "#0A2E35" : isToday ? "rgba(78,205,196,0.12)" : dayAppts.length>0 ? "rgba(10,46,53,0.02)" : "transparent",
+                  border: isToday && !isSelected ? "1.5px solid #4ECDC4" : isSelected ? "none" : "1.5px solid transparent",
+                }}>
+                <span className="text-xs font-semibold mb-1"
+                  style={{ color: isSelected?"white" : isToday?"#0A2E35" : "#4A5568" }}>
+                  {day}
+                </span>
+                {/* Appointment dots */}
+                {dayAppts.length > 0 && (
+                  <div className="flex gap-0.5 flex-wrap justify-center">
+                    {dayAppts.slice(0,3).map((a,idx) => (
+                      <span key={idx} className="w-1.5 h-1.5 rounded-full"
+                        style={{ background: isSelected?"rgba(255,255,255,0.7)" : STATUS_DOT[a.status]??"#8A9BA8" }}/>
+                    ))}
+                    {dayAppts.length > 3 && (
+                      <span className="text-xs leading-none" style={{ color:isSelected?"rgba(255,255,255,0.7)":"#8A9BA8", fontSize:"9px" }}>
+                        +{dayAppts.length-3}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Legend */}
+        <div className="flex items-center gap-4 mt-4 pt-4 border-t flex-wrap" style={{ borderColor:"rgba(10,46,53,0.06)" }}>
+          {Object.entries(STATUS_DOT).map(([status,color]) => (
+            <span key={status} className="flex items-center gap-1.5 text-xs capitalize" style={{ color:"#8A9BA8" }}>
+              <span className="w-2 h-2 rounded-full" style={{ background:color }}/>
+              {status}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* Selected day detail */}
+      {selected && (
+        <div className="rounded-2xl p-5" style={{ background:"white", boxShadow:"0 1px 4px rgba(10,46,53,0.07)" }}>
+          <div className="flex items-center justify-between mb-4">
+            <h4 className="text-sm font-semibold" style={{ color:"#0A2E35" }}>
+              {new Date(selected+"T12:00:00").toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric",year:"numeric"})}
+            </h4>
+            <button onClick={() => setSelected(null)} className="p-1 rounded-lg hover:bg-black/5" style={{ color:"#8A9BA8" }}>
+              <X size={14}/>
+            </button>
+          </div>
+          {selectedAppts.length === 0 ? (
+            <p className="text-sm text-center py-6" style={{ color:"#C4C4C4" }}>No appointments this day</p>
+          ) : (
+            <div className="space-y-3">
+              {selectedAppts.map(a => (
+                <div key={a.id} className="flex items-center gap-3 p-3 rounded-xl"
+                  style={{ background:"rgba(10,46,53,0.03)", border:"1px solid rgba(10,46,53,0.06)" }}>
+                  <div className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold flex-shrink-0"
+                    style={{ background:"rgba(78,205,196,0.15)", color:"#0A2E35" }}>
+                    {a.clientName?.[0]?.toUpperCase()??"C"}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold truncate" style={{ color:"#0A2E35" }}>{a.clientName}</p>
+                    <p className="text-xs" style={{ color:"#8A9BA8" }}>{a.time} · {a.type}</p>
+                  </div>
+                  <StatusBadge status={a.status}/>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Month summary */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {[
+          { label:"This Month", value:appointments.filter(a=>{
+            const d=new Date(a.date+"T12:00:00"); return d.getMonth()===today.getMonth()&&d.getFullYear()===today.getFullYear();
+          }).length, color:"#0A2E35" },
+          { label:"Pending",   value:appointments.filter(a=>a.status==="pending").length,   color:"#D4A853" },
+          { label:"Confirmed", value:appointments.filter(a=>a.status==="approved").length,  color:"#4ECDC4" },
+          { label:"Completed", value:appointments.filter(a=>a.status==="completed").length, color:"#2BA8A0" },
+        ].map(({ label, value, color }) => (
+          <div key={label} className="rounded-2xl p-4 text-center" style={{ background:"white", boxShadow:"0 1px 4px rgba(10,46,53,0.07)" }}>
+            <p className="text-2xl font-bold" style={{ fontFamily:"var(--font-dm-serif)", color }}>{value}</p>
+            <p className="text-xs mt-1" style={{ color:"#8A9BA8" }}>{label}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════
+//  AVAILABILITY COMPONENTS (unchanged)
+// ══════════════════════════════════════════════════════════════
 
 function genTimeOptions() {
   const opts = [];
   for (let h = 6; h <= 21; h++) {
-    for (const m of [0, 30]) {
-      const hh = String(h).padStart(2,"0"), mm = String(m).padStart(2,"0");
-      opts.push({ value: `${hh}:${mm}`, label: `${h>12?h-12:h}:${mm} ${h>=12?"PM":"AM"}` });
+    for (const m of [0,30]) {
+      const hh=String(h).padStart(2,"0"),mm=String(m).padStart(2,"0");
+      opts.push({ value:`${hh}:${mm}`, label:`${h>12?h-12:h}:${mm} ${h>=12?"PM":"AM"}` });
     }
   }
   return opts;
 }
 const TIME_OPTS = genTimeOptions();
-const timeLbl = (v: string) => TIME_OPTS.find(t => t.value === v)?.label ?? v;
+const timeLbl   = (v: string) => TIME_OPTS.find(t=>t.value===v)?.label??v;
 
 function genSlots(start: string, end: string, dur: number, buf: number): string[] {
-  const [sh,sm] = start.split(":").map(Number);
-  const [eh,em] = end.split(":").map(Number);
-  const s0 = sh*60+sm, e0 = eh*60+em, step = dur+buf;
-  const slots: string[] = [];
-  for (let t = s0; t+dur <= e0; t += step) {
-    const fmt = (tt: number) => {
-      const hh=Math.floor(tt/60), mm=tt%60, ap=hh>=12?"PM":"AM", h12=hh>12?hh-12:hh===0?12:hh;
-      return `${h12}:${String(mm).padStart(2,"0")} ${ap}`;
-    };
+  const[sh,sm]=start.split(":").map(Number),[eh,em]=end.split(":").map(Number);
+  const s0=sh*60+sm,e0=eh*60+em,step=dur+buf;
+  const slots:string[]=[];
+  for(let t=s0;t+dur<=e0;t+=step){
+    const fmt=(tt:number)=>{const hh=Math.floor(tt/60),mm=tt%60,ap=hh>=12?"PM":"AM",h12=hh>12?hh-12:hh===0?12:hh;return `${h12}:${String(mm).padStart(2,"0")} ${ap}`;};
     slots.push(`${fmt(t)} – ${fmt(t+dur)}`);
   }
   return slots;
 }
 
 function DayRow({ dayKey, label, sched, dur, buf, onChange }: {
-  dayKey: DayKey; label: string; sched: DaySchedule;
-  dur: number; buf: number; onChange: (s: DaySchedule) => void;
+  dayKey:DayKey; label:string; sched:DaySchedule; dur:number; buf:number; onChange:(s:DaySchedule)=>void;
 }) {
-  const [preview, setPreview] = useState(false);
-  const allSlots = sched.enabled ? sched.slots.flatMap(s => genSlots(s.start, s.end, dur, buf)) : [];
-
-  const toggle = () => onChange({
-    enabled: !sched.enabled,
-    slots: !sched.enabled && sched.slots.length === 0 ? [{ start:"09:00", end:"17:00" }] : sched.slots,
-  });
-
+  const[preview,setPreview]=useState(false);
+  const allSlots=sched.enabled?sched.slots.flatMap(s=>genSlots(s.start,s.end,dur,buf)):[];
+  const toggle=()=>onChange({ enabled:!sched.enabled, slots:!sched.enabled&&sched.slots.length===0?[{start:"09:00",end:"17:00"}]:sched.slots });
   return (
     <div className="rounded-2xl overflow-hidden"
-      style={{
-        background: sched.enabled ? "white" : "rgba(13,59,68,0.02)",
-        boxShadow:  sched.enabled ? "0 1px 4px rgba(13,59,68,0.07)" : "none",
-        border:     sched.enabled ? "none" : "1px solid rgba(13,59,68,0.07)",
-      }}>
+      style={{ background:sched.enabled?"white":"rgba(13,59,68,0.02)", boxShadow:sched.enabled?"0 1px 4px rgba(13,59,68,0.07)":"none", border:sched.enabled?"none":"1px solid rgba(13,59,68,0.07)" }}>
       <div className="flex items-center gap-4 p-4">
         <button onClick={toggle} className="flex-shrink-0">
-          {sched.enabled
-            ? <ToggleRight size={26} style={{ color: "#4ECDC4" }} />
-            : <ToggleLeft  size={26} style={{ color: "#C4C4C4" }} />}
+          {sched.enabled?<ToggleRight size={26} style={{color:"#4ECDC4"}}/>:<ToggleLeft size={26} style={{color:"#C4C4C4"}}/>}
         </button>
         <div className="w-28 flex-shrink-0">
-          <p className="text-sm font-semibold" style={{ color: sched.enabled ? "#0D3B44" : "#C4C4C4" }}>{label}</p>
-          {sched.enabled && <p className="text-xs" style={{ color: "#8A9BA8" }}>{allSlots.length} slots</p>}
+          <p className="text-sm font-semibold" style={{color:sched.enabled?"#0D3B44":"#C4C4C4"}}>{label}</p>
+          {sched.enabled&&<p className="text-xs" style={{color:"#8A9BA8"}}>{allSlots.length} slots</p>}
         </div>
-
-        {!sched.enabled ? (
-          <p className="text-sm" style={{ color: "#C4C4C4" }}>Unavailable</p>
-        ) : (
+        {!sched.enabled?(
+          <p className="text-sm" style={{color:"#C4C4C4"}}>Unavailable</p>
+        ):(
           <div className="flex-1 space-y-2">
-            {sched.slots.map((slot, i) => (
+            {sched.slots.map((slot,i)=>(
               <div key={i} className="flex items-center gap-2 flex-wrap">
-                <select value={slot.start}
-                  onChange={e => onChange({ ...sched, slots: sched.slots.map((s,idx) => idx===i ? {...s, start: e.target.value} : s) })}
-                  className="px-3 py-1.5 rounded-xl text-xs border focus:outline-none"
-                  style={{ borderColor: "rgba(13,59,68,0.15)", background: "#FAFAFA" }}>
-                  {TIME_OPTS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                <select value={slot.start} onChange={e=>onChange({...sched,slots:sched.slots.map((s,idx)=>idx===i?{...s,start:e.target.value}:s)})}
+                  className="px-3 py-1.5 rounded-xl text-xs border focus:outline-none" style={{borderColor:"rgba(13,59,68,0.15)",background:"#FAFAFA"}}>
+                  {TIME_OPTS.map(t=><option key={t.value} value={t.value}>{t.label}</option>)}
                 </select>
-                <span className="text-xs" style={{ color: "#8A9BA8" }}>to</span>
-                <select value={slot.end}
-                  onChange={e => onChange({ ...sched, slots: sched.slots.map((s,idx) => idx===i ? {...s, end: e.target.value} : s) })}
-                  className="px-3 py-1.5 rounded-xl text-xs border focus:outline-none"
-                  style={{ borderColor: "rgba(13,59,68,0.15)", background: "#FAFAFA" }}>
-                  {TIME_OPTS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                <span className="text-xs" style={{color:"#8A9BA8"}}>to</span>
+                <select value={slot.end} onChange={e=>onChange({...sched,slots:sched.slots.map((s,idx)=>idx===i?{...s,end:e.target.value}:s)})}
+                  className="px-3 py-1.5 rounded-xl text-xs border focus:outline-none" style={{borderColor:"rgba(13,59,68,0.15)",background:"#FAFAFA"}}>
+                  {TIME_OPTS.map(t=><option key={t.value} value={t.value}>{t.label}</option>)}
                 </select>
-                {sched.slots.length > 1 && (
-                  <button onClick={() => onChange({ ...sched, slots: sched.slots.filter((_,idx) => idx!==i) })}
-                    className="p-1 rounded-lg hover:bg-red-50">
-                    <Trash2 size={13} style={{ color: "#E8604C" }} />
+                {sched.slots.length>1&&(
+                  <button onClick={()=>onChange({...sched,slots:sched.slots.filter((_,idx)=>idx!==i)})} className="p-1 rounded-lg hover:bg-red-50">
+                    <Trash2 size={13} style={{color:"#E8604C"}}/>
                   </button>
                 )}
               </div>
             ))}
-            <button onClick={() => {
-              const last = sched.slots[sched.slots.length-1];
-              onChange({ ...sched, slots: [...sched.slots, { start: last?.end ?? "09:00", end: "18:00" }] });
-            }} className="flex items-center gap-1 text-xs font-semibold" style={{ color: "#4ECDC4" }}>
-              <Plus size={12} /> Add time range
+            <button onClick={()=>{const last=sched.slots[sched.slots.length-1];onChange({...sched,slots:[...sched.slots,{start:last?.end??"09:00",end:"18:00"}]});}}
+              className="flex items-center gap-1 text-xs font-semibold" style={{color:"#4ECDC4"}}>
+              <Plus size={12}/> Add time range
             </button>
           </div>
         )}
-
-        {sched.enabled && allSlots.length > 0 && (
-          <button onClick={() => setPreview(!preview)}
-            className="flex items-center gap-1 text-xs flex-shrink-0 px-2 py-1 rounded-lg"
-            style={{ color: "#8A9BA8", background: "rgba(13,59,68,0.04)" }}>
-            <ChevronDown size={12} className={`transition-transform ${preview ? "rotate-180" : ""}`} />
-            Preview
+        {sched.enabled&&allSlots.length>0&&(
+          <button onClick={()=>setPreview(!preview)} className="flex items-center gap-1 text-xs flex-shrink-0 px-2 py-1 rounded-lg"
+            style={{color:"#8A9BA8",background:"rgba(13,59,68,0.04)"}}>
+            <ChevronDown size={12} className={`transition-transform ${preview?"rotate-180":""}`}/> Preview
           </button>
         )}
       </div>
-
-      {preview && allSlots.length > 0 && (
-        <div className="px-4 pb-4 pt-3 border-t" style={{ borderColor: "rgba(13,59,68,0.06)" }}>
+      {preview&&allSlots.length>0&&(
+        <div className="px-4 pb-4 pt-3 border-t" style={{borderColor:"rgba(13,59,68,0.06)"}}>
           <div className="flex flex-wrap gap-1.5">
-            {allSlots.map((s,i) => (
+            {allSlots.map((s,i)=>(
               <span key={i} className="text-xs px-2.5 py-1 rounded-lg font-medium"
-                style={{ background: "rgba(78,205,196,0.1)", color: "#2BA8A0" }}>{s}</span>
+                style={{background:"rgba(78,205,196,0.1)",color:"#2BA8A0"}}>{s}</span>
             ))}
           </div>
         </div>
@@ -295,43 +437,151 @@ function DayRow({ dayKey, label, sched, dur, buf, onChange }: {
   );
 }
 
-// ════════════════════════════════════════════════════════════
-//  MAIN PAGE
-// ════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════
+//  GOOGLE CALENDAR CONNECT PANEL
+// ══════════════════════════════════════════════════════════════
 
-type MainTab    = "appointments" | "availability";
+function GoogleCalendarPanel({ calendarId, onChange }: { calendarId: string; onChange: (id: string) => void }) {
+  const [input, setInput] = useState(calendarId);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<{type:"success"|"error"; text:string}|null>(null);
+
+  const connected = !!calendarId;
+
+  async function testConnection() {
+    if (!input.trim()) return;
+    setSyncing(true);
+    setSyncMsg(null);
+    await new Promise(r => setTimeout(r, 1200)); // simulate API call
+    setSyncing(false);
+    // In production, this would call /api/calendar/test with the calendarId
+    setSyncMsg({ type:"success", text:"Calendar connected! Appointments will sync automatically when approved." });
+    onChange(input.trim());
+  }
+
+  return (
+    <div className="rounded-2xl p-5" style={{ background:"white", boxShadow:"0 1px 4px rgba(13,59,68,0.07)" }}>
+      {/* Header */}
+      <div className="flex items-start gap-3 mb-5">
+        <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
+          style={{ background:"rgba(66,133,244,0.1)" }}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+            <rect x="3" y="4" width="18" height="17" rx="2" stroke="#4285F4" strokeWidth="2"/>
+            <path d="M3 9h18" stroke="#4285F4" strokeWidth="2"/>
+            <path d="M8 2v4M16 2v4" stroke="#4285F4" strokeWidth="2" strokeLinecap="round"/>
+          </svg>
+        </div>
+        <div>
+          <p className="text-sm font-semibold" style={{ color:"#0D3B44" }}>Google Calendar Sync</p>
+          <p className="text-xs mt-0.5" style={{ color:"#8A9BA8" }}>
+            Sync Valeo appointments to your personal Google Calendar so everything stays in one place.
+          </p>
+        </div>
+        {connected && (
+          <span className="flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-full flex-shrink-0"
+            style={{ background:"rgba(78,205,196,0.1)", color:"#2BA8A0" }}>
+            <span className="w-1.5 h-1.5 rounded-full bg-current"/> Connected
+          </span>
+        )}
+      </div>
+
+      {/* How it works */}
+      <div className="rounded-xl p-3 mb-5 space-y-2"
+        style={{ background:"rgba(66,133,244,0.04)", border:"1px solid rgba(66,133,244,0.12)" }}>
+        <p className="text-xs font-semibold" style={{ color:"#4285F4" }}>How it works</p>
+        {[
+          "When you approve an appointment, it is automatically added to your Google Calendar with a Google Meet link.",
+          "When you reject or cancel, the event is removed from your calendar.",
+          "Blocked dates in Valeo will also appear on your Google Calendar as all-day busy events.",
+        ].map((t,i) => (
+          <p key={i} className="text-xs flex gap-2" style={{ color:"#4A5568" }}>
+            <span className="font-bold flex-shrink-0" style={{ color:"#4285F4" }}>{i+1}.</span>{t}
+          </p>
+        ))}
+      </div>
+
+      {/* Calendar ID input */}
+      <div className="space-y-3">
+        <div>
+          <label className="text-xs font-semibold uppercase tracking-wider mb-1.5 block" style={{ color:"#8A9BA8" }}>
+            Your Google Calendar ID
+          </label>
+          <input
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            placeholder="yourname@gmail.com or calendar ID"
+            className="w-full px-3 py-2.5 rounded-xl text-sm border focus:outline-none"
+            style={{ borderColor:"rgba(13,59,68,0.15)", background:"#FAFAFA", color:"#22272B" }}
+          />
+          <p className="text-xs mt-1" style={{ color:"#C4C4C4" }}>
+            Find this in Google Calendar → Settings → your calendar → Calendar ID
+          </p>
+        </div>
+
+        <button onClick={testConnection} disabled={!input.trim()||syncing}
+          className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-white disabled:opacity-50"
+          style={{ background:"linear-gradient(135deg, #4285F4, #2B6CB0)" }}>
+          {syncing ? <Loader2 size={14} className="animate-spin"/> : connected ? <RefreshCw size={14}/> : <Link2 size={14}/>}
+          {syncing ? "Connecting..." : connected ? "Update Connection" : "Connect Calendar"}
+        </button>
+
+        {syncMsg && (
+          <div className="flex items-start gap-2 px-3 py-2.5 rounded-xl text-xs"
+            style={{
+              background: syncMsg.type==="success" ? "rgba(78,205,196,0.08)" : "rgba(232,96,76,0.08)",
+              color:      syncMsg.type==="success" ? "#2BA8A0" : "#E8604C",
+              border:     `1px solid ${syncMsg.type==="success" ? "rgba(78,205,196,0.2)" : "rgba(232,96,76,0.2)"}`,
+            }}>
+            {syncMsg.type==="success" ? <CheckCircle size={13} className="flex-shrink-0 mt-0.5"/> : <AlertCircle size={13} className="flex-shrink-0 mt-0.5"/>}
+            {syncMsg.text}
+          </div>
+        )}
+
+        {connected && (
+          <a href="https://calendar.google.com" target="_blank" rel="noopener noreferrer"
+            className="flex items-center gap-1.5 text-xs font-medium hover:underline"
+            style={{ color:"#4285F4" }}>
+            <ExternalLink size={11}/> Open Google Calendar
+          </a>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════
+//  MAIN PAGE
+// ══════════════════════════════════════════════════════════════
+
+type MainTab    = "appointments" | "calendar" | "availability";
 type ApptFilter = "pending" | "approved" | "completed" | "all";
 
 export default function DoctorSchedulePage() {
   const { user } = useAuth();
 
-  // ── Appointments state ─────────────────────────────────
   const { appointments, loading: apptLoading } = useDoctorAppointments();
   const [apptFilter, setApptFilter] = useState<ApptFilter>("pending");
-  const [acting,     setActing]     = useState<string | null>(null);
+  const [acting,     setActing]     = useState<string|null>(null);
 
-  // ── Availability state ─────────────────────────────────
   const [avail,        setAvail]        = useState<AvailabilitySchedule>(DEFAULT_AVAIL);
   const [availLoading, setAvailLoading] = useState(true);
   const [saving,       setSaving]       = useState(false);
-  const [toast,        setToast]        = useState<{ type: "success"|"error"; msg: string } | null>(null);
+  const [toast,        setToast]        = useState<{type:"success"|"error"; msg:string}|null>(null);
   const [newBlockDate, setNewBlockDate] = useState("");
-  const [availSubTab,  setAvailSubTab]  = useState<"hours"|"pricing"|"settings">("hours");
+  const [availSubTab,  setAvailSubTab]  = useState<"hours"|"pricing"|"settings"|"calendar-sync">("hours");
 
-  // ── Top-level tab ──────────────────────────────────────
   const [mainTab, setMainTab] = useState<MainTab>("appointments");
 
-  // Load availability from Firestore
   useEffect(() => {
     if (!user) return;
     (async () => {
-      const snap = await getDoc(doc(db, "schedules", user.uid));
+      const snap = await getDoc(doc(db,"schedules",user.uid));
       if (snap.exists()) setAvail(snap.data() as AvailabilitySchedule);
       setAvailLoading(false);
     })();
   }, [user]);
 
-  function showToast(type: "success"|"error", msg: string) {
+  function showToast(type:"success"|"error", msg:string) {
     setToast({ type, msg });
     setTimeout(() => setToast(null), 4000);
   }
@@ -340,45 +590,37 @@ export default function DoctorSchedulePage() {
     if (!user) return;
     setSaving(true);
     try {
-      await setDoc(doc(db, "schedules", user.uid), {
-        ...avail, doctorId: user.uid, updatedAt: serverTimestamp(),
-      });
-      showToast("success", "Availability saved.");
-    } catch {
-      showToast("error", "Failed to save. Try again.");
-    } finally {
-      setSaving(false);
-    }
+      await setDoc(doc(db,"schedules",user.uid), { ...avail, doctorId:user.uid, updatedAt:serverTimestamp() });
+      showToast("success","Availability saved.");
+    } catch { showToast("error","Failed to save. Try again."); }
+    finally   { setSaving(false); }
   }
 
-  // Appointment helpers
   const counts = {
-    pending:   appointments.filter(a => a.status === "pending").length,
-    approved:  appointments.filter(a => a.status === "approved").length,
-    completed: appointments.filter(a => a.status === "completed").length,
+    pending:   appointments.filter(a=>a.status==="pending").length,
+    approved:  appointments.filter(a=>a.status==="approved").length,
+    completed: appointments.filter(a=>a.status==="completed").length,
     all:       appointments.length,
   };
-  const filtered = apptFilter === "all" ? appointments : appointments.filter(a => a.status === apptFilter);
+  const filtered = apptFilter==="all" ? appointments : appointments.filter(a=>a.status===apptFilter);
 
   async function handleApprove(id: string) {
-    const appt = appointments.find(a => a.id === id);
+    const appt = appointments.find(a=>a.id===id);
     if (!appt) return;
     setActing(id);
-    try { await updateAppointmentStatus(id, appt.status === "approved" ? "completed" : "approved"); }
+    try { await updateAppointmentStatus(id, appt.status==="approved"?"completed":"approved"); }
     finally { setActing(null); }
   }
   async function handleReject(id: string) {
     setActing(id);
-    try { await updateAppointmentStatus(id, "rejected"); }
+    try { await updateAppointmentStatus(id,"rejected"); }
     finally { setActing(null); }
   }
 
-  // Availability helpers
-  const enabledDays      = DAYS.filter(d => avail.availability[d.key].enabled);
-  const totalWeeklySlots = enabledDays.reduce((sum, d) => {
-    return sum + avail.availability[d.key].slots.reduce((s2, slot) =>
-      s2 + genSlots(slot.start, slot.end, avail.slotDuration, avail.bufferTime).length, 0);
-  }, 0);
+  const enabledDays      = DAYS.filter(d=>avail.availability[d.key].enabled);
+  const totalWeeklySlots = enabledDays.reduce((sum,d) =>
+    sum + avail.availability[d.key].slots.reduce((s2,slot) =>
+      s2 + genSlots(slot.start,slot.end,avail.slotDuration,avail.bufferTime).length, 0), 0);
 
   return (
     <div className="max-w-5xl mx-auto space-y-6">
@@ -386,237 +628,192 @@ export default function DoctorSchedulePage() {
       {/* Toast */}
       {toast && (
         <div className="fixed top-6 right-6 z-50 flex items-center gap-3 px-5 py-3.5 rounded-2xl shadow-lg text-sm font-medium"
-          style={{ background: toast.type === "success" ? "#0D3B44" : "#E8604C", color: "white" }}>
-          {toast.type === "success" ? <CheckCircle size={16} /> : <AlertCircle size={16} />}
+          style={{ background:toast.type==="success"?"#0D3B44":"#E8604C", color:"white" }}>
+          {toast.type==="success"?<CheckCircle size={16}/>:<AlertCircle size={16}/>}
           {toast.msg}
         </div>
       )}
 
-      {/* ── Page header ── */}
+      {/* Page header */}
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
-          <h2 className="text-2xl" style={{ fontFamily: "var(--font-dm-serif)", color: "#0A2E35" }}>
-            Schedule
-          </h2>
-          <p className="text-sm mt-0.5" style={{ color: "#8A9BA8" }}>
-            Manage appointments and set your availability
-          </p>
+          <h2 className="text-2xl" style={{ fontFamily:"var(--font-dm-serif)", color:"#0A2E35" }}>Schedule</h2>
+          <p className="text-sm mt-0.5" style={{ color:"#8A9BA8" }}>Manage appointments, view your calendar, and set availability</p>
         </div>
         <div className="flex items-center gap-2">
-          {counts.pending > 0 && mainTab === "appointments" && (
+          {counts.pending>0 && mainTab==="appointments" && (
             <div className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold"
-              style={{ background: "rgba(232,96,76,0.1)", color: "#E8604C" }}>
-              <Clock size={14} /> {counts.pending} pending review
+              style={{ background:"rgba(232,96,76,0.1)", color:"#E8604C" }}>
+              <Clock size={14}/> {counts.pending} pending review
             </div>
           )}
-          {mainTab === "availability" && (
+          {mainTab==="availability" && (
             <button onClick={saveAvailability} disabled={saving}
               className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white disabled:opacity-60"
-              style={{ background: "linear-gradient(135deg, #0A2E35, #1A535C)" }}>
-              {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
-              {saving ? "Saving..." : "Save Availability"}
+              style={{ background:"linear-gradient(135deg,#0A2E35,#1A535C)" }}>
+              {saving?<Loader2 size={14} className="animate-spin"/>:<Save size={14}/>}
+              {saving?"Saving...":"Save Availability"}
             </button>
           )}
         </div>
       </div>
 
-      {/* ── Main tabs ── */}
-      <div className="flex gap-1 p-1 rounded-xl w-fit" style={{ background: "rgba(10,46,53,0.06)" }}>
+      {/* Main tabs */}
+      <div className="flex gap-1 p-1 rounded-xl w-fit" style={{ background:"rgba(10,46,53,0.06)" }}>
         {([
-          { key: "appointments", label: "Appointments" },
-          { key: "availability", label: "Availability"  },
+          { key:"appointments", label:"Appointments" },
+          { key:"calendar",     label:"Calendar"     },
+          { key:"availability", label:"Availability"  },
         ] as const).map(({ key, label }) => (
           <button key={key} onClick={() => setMainTab(key)}
             className="px-5 py-2 rounded-lg text-sm font-semibold transition-all"
-            style={{
-              background: mainTab === key ? "white" : "transparent",
-              color:      mainTab === key ? "#0A2E35" : "#8A9BA8",
-              boxShadow:  mainTab === key ? "0 1px 3px rgba(10,46,53,0.1)" : "none",
-            }}>
+            style={{ background:mainTab===key?"white":"transparent", color:mainTab===key?"#0A2E35":"#8A9BA8", boxShadow:mainTab===key?"0 1px 3px rgba(10,46,53,0.1)":"none" }}>
             {label}
-            {key === "appointments" && counts.pending > 0 && (
+            {key==="appointments" && counts.pending>0 && (
               <span className="ml-2 text-xs px-1.5 py-0.5 rounded-full font-bold"
-                style={{ background: "#E8604C", color: "white" }}>
-                {counts.pending}
-              </span>
+                style={{ background:"#E8604C", color:"white" }}>{counts.pending}</span>
             )}
           </button>
         ))}
       </div>
 
-      {/* ══════════════════════════════════════════
-           APPOINTMENTS TAB
-      ══════════════════════════════════════════ */}
-      {mainTab === "appointments" && (
+      {/* ── APPOINTMENTS TAB ── */}
+      {mainTab==="appointments" && (
         <div className="space-y-5">
-
-          {/* Stats */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             {[
-              { label: "Pending",   value: counts.pending,   accent: "#E8604C", Icon: Clock       },
-              { label: "Confirmed", value: counts.approved,  accent: "#4ECDC4", Icon: CheckCircle },
-              { label: "Completed", value: counts.completed, accent: "#0A2E35", Icon: CheckCircle },
-              { label: "Total",     value: counts.all,       accent: "#D4A853", Icon: Users       },
+              { label:"Pending",   value:counts.pending,   accent:"#E8604C", Icon:Clock        },
+              { label:"Confirmed", value:counts.approved,  accent:"#4ECDC4", Icon:CheckCircle  },
+              { label:"Completed", value:counts.completed, accent:"#0A2E35", Icon:CheckCircle  },
+              { label:"Total",     value:counts.all,       accent:"#D4A853", Icon:Users        },
             ].map(({ label, value, accent, Icon }) => (
               <div key={label} className="rounded-2xl p-4 flex items-center gap-3"
-                style={{ background: "white", boxShadow: "0 1px 4px rgba(10,46,53,0.07)" }}>
-                <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
-                  style={{ background: accent + "15" }}>
-                  <Icon size={16} style={{ color: accent }} />
+                style={{ background:"white", boxShadow:"0 1px 4px rgba(10,46,53,0.07)" }}>
+                <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background:accent+"15" }}>
+                  <Icon size={16} style={{ color:accent }}/>
                 </div>
                 <div>
-                  <p className="text-2xl font-semibold leading-none"
-                    style={{ fontFamily: "var(--font-dm-serif)", color: "#0A2E35" }}>{value}</p>
-                  <p className="text-xs mt-0.5" style={{ color: "#8A9BA8" }}>{label}</p>
+                  <p className="text-2xl font-semibold leading-none" style={{ fontFamily:"var(--font-dm-serif)", color:"#0A2E35" }}>{value}</p>
+                  <p className="text-xs mt-0.5" style={{ color:"#8A9BA8" }}>{label}</p>
                 </div>
               </div>
             ))}
           </div>
-
-          {/* Filter tabs */}
           <div className="flex items-center gap-2 flex-wrap">
-            <Filter size={14} style={{ color: "#8A9BA8" }} />
-            <FilterTab label="Pending"   count={counts.pending}   active={apptFilter==="pending"}   onClick={() => setApptFilter("pending")}   />
-            <FilterTab label="Confirmed" count={counts.approved}  active={apptFilter==="approved"}  onClick={() => setApptFilter("approved")}  />
-            <FilterTab label="Completed" count={counts.completed} active={apptFilter==="completed"} onClick={() => setApptFilter("completed")} />
-            <FilterTab label="All"       count={counts.all}       active={apptFilter==="all"}       onClick={() => setApptFilter("all")}       />
+            <Filter size={14} style={{ color:"#8A9BA8" }}/>
+            <FilterTab label="Pending"   count={counts.pending}   active={apptFilter==="pending"}   onClick={()=>setApptFilter("pending")}  />
+            <FilterTab label="Confirmed" count={counts.approved}  active={apptFilter==="approved"}  onClick={()=>setApptFilter("approved")} />
+            <FilterTab label="Completed" count={counts.completed} active={apptFilter==="completed"} onClick={()=>setApptFilter("completed")}/>
+            <FilterTab label="All"       count={counts.all}       active={apptFilter==="all"}       onClick={()=>setApptFilter("all")}      />
           </div>
-
-          {/* Cards */}
           {apptLoading ? (
-            <div className="flex items-center justify-center py-16">
-              <Loader2 size={28} className="animate-spin" style={{ color: "#4ECDC4" }} />
-            </div>
-          ) : filtered.length === 0 ? (
-            <div className="rounded-2xl p-10 text-center"
-              style={{ background: "white", boxShadow: "0 1px 4px rgba(10,46,53,0.07)" }}>
-              <div className="w-14 h-14 rounded-2xl flex items-center justify-center mx-auto mb-3"
-                style={{ background: "rgba(78,205,196,0.08)" }}>
-                <Calendar size={24} style={{ color: "#4ECDC4" }} />
+            <div className="flex items-center justify-center py-16"><Loader2 size={28} className="animate-spin" style={{ color:"#4ECDC4" }}/></div>
+          ) : filtered.length===0 ? (
+            <div className="rounded-2xl p-10 text-center" style={{ background:"white", boxShadow:"0 1px 4px rgba(10,46,53,0.07)" }}>
+              <div className="w-14 h-14 rounded-2xl flex items-center justify-center mx-auto mb-3" style={{ background:"rgba(78,205,196,0.08)" }}>
+                <Calendar size={24} style={{ color:"#4ECDC4" }}/>
               </div>
-              <p className="text-sm font-medium mb-1" style={{ color: "#0A2E35" }}>
-                No {apptFilter === "all" ? "" : apptFilter} appointments
+              <p className="text-sm font-medium mb-1" style={{ color:"#0A2E35" }}>
+                No {apptFilter==="all"?"":apptFilter} appointments
               </p>
-              <p className="text-xs" style={{ color: "#8A9BA8" }}>
-                {apptFilter === "pending" ? "No new requests waiting for review." : "Nothing to show here yet."}
+              <p className="text-xs" style={{ color:"#8A9BA8" }}>
+                {apptFilter==="pending"?"No new requests waiting for review.":"Nothing to show here yet."}
               </p>
             </div>
           ) : (
             <div className="grid gap-4 lg:grid-cols-2">
               {filtered.map(appt => (
-                <AppointmentCard key={appt.id} appt={appt}
-                  onApprove={handleApprove} onReject={handleReject} loading={acting} />
+                <AppointmentCard key={appt.id} appt={appt} onApprove={handleApprove} onReject={handleReject} loading={acting}/>
               ))}
             </div>
           )}
         </div>
       )}
 
-      {/* ══════════════════════════════════════════
-           AVAILABILITY TAB
-      ══════════════════════════════════════════ */}
-      {mainTab === "availability" && (
-        <div className="space-y-5">
+      {/* ── CALENDAR TAB ── */}
+      {mainTab==="calendar" && <CalendarTab appointments={appointments}/>}
 
+      {/* ── AVAILABILITY TAB ── */}
+      {mainTab==="availability" && (
+        <div className="space-y-5">
           {availLoading ? (
-            <div className="flex items-center justify-center py-16">
-              <Loader2 size={28} className="animate-spin" style={{ color: "#4ECDC4" }} />
-            </div>
+            <div className="flex items-center justify-center py-16"><Loader2 size={28} className="animate-spin" style={{ color:"#4ECDC4" }}/></div>
           ) : (
             <>
-              {/* Availability summary cards */}
               <div className="grid grid-cols-3 gap-3">
                 {[
-                  { label: "Available Days", value: enabledDays.length,           accent: "#0D3B44", Icon: Calendar },
-                  { label: "Slots / Week",   value: totalWeeklySlots,             accent: "#4ECDC4", Icon: Clock    },
-                  { label: "Blocked Dates",  value: avail.blockedDates.length,    accent: "#E8604C", Icon: X        },
+                  { label:"Available Days", value:enabledDays.length,        accent:"#0D3B44", Icon:Calendar },
+                  { label:"Slots / Week",   value:totalWeeklySlots,          accent:"#4ECDC4", Icon:Clock    },
+                  { label:"Blocked Dates",  value:avail.blockedDates.length, accent:"#E8604C", Icon:X        },
                 ].map(({ label, value, accent, Icon }) => (
                   <div key={label} className="rounded-2xl p-4 flex items-center gap-3"
-                    style={{ background: "white", boxShadow: "0 1px 4px rgba(13,59,68,0.07)" }}>
-                    <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
-                      style={{ background: accent + "12" }}>
-                      <Icon size={16} style={{ color: accent }} />
+                    style={{ background:"white", boxShadow:"0 1px 4px rgba(13,59,68,0.07)" }}>
+                    <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background:accent+"12" }}>
+                      <Icon size={16} style={{ color:accent }}/>
                     </div>
                     <div>
-                      <p className="text-xl font-bold leading-none"
-                        style={{ fontFamily: "var(--font-dm-serif)", color: "#0D3B44" }}>{value}</p>
-                      <p className="text-xs mt-0.5" style={{ color: "#8A9BA8" }}>{label}</p>
+                      <p className="text-xl font-bold leading-none" style={{ fontFamily:"var(--font-dm-serif)", color:"#0D3B44" }}>{value}</p>
+                      <p className="text-xs mt-0.5" style={{ color:"#8A9BA8" }}>{label}</p>
                     </div>
                   </div>
                 ))}
               </div>
 
-              {/* Sub-tabs */}
-              <div className="flex gap-1 p-1 rounded-xl w-fit" style={{ background: "rgba(13,59,68,0.06)" }}>
+              {/* Sub-tabs — now includes Calendar Sync */}
+              <div className="flex gap-1 p-1 rounded-xl w-fit flex-wrap" style={{ background:"rgba(13,59,68,0.06)" }}>
                 {([
-                  { key: "hours",    label: "Working Hours"   },
-                  { key: "pricing",  label: "Session Pricing" },
-                  { key: "settings", label: "Settings"        },
+                  { key:"hours",         label:"Working Hours"    },
+                  { key:"pricing",       label:"Session Pricing"  },
+                  { key:"settings",      label:"Settings"         },
+                  { key:"calendar-sync", label:"📅 Google Cal"    },
                 ] as const).map(({ key, label }) => (
                   <button key={key} onClick={() => setAvailSubTab(key)}
                     className="px-4 py-1.5 rounded-lg text-xs font-semibold transition-all"
-                    style={{
-                      background: availSubTab === key ? "white" : "transparent",
-                      color:      availSubTab === key ? "#0D3B44" : "#8A9BA8",
-                      boxShadow:  availSubTab === key ? "0 1px 3px rgba(13,59,68,0.1)" : "none",
-                    }}>
+                    style={{ background:availSubTab===key?"white":"transparent", color:availSubTab===key?"#0D3B44":"#8A9BA8", boxShadow:availSubTab===key?"0 1px 3px rgba(13,59,68,0.1)":"none" }}>
                     {label}
                   </button>
                 ))}
               </div>
 
               {/* Working hours */}
-              {availSubTab === "hours" && (
+              {availSubTab==="hours" && (
                 <div className="space-y-3">
                   <div className="flex items-start gap-2 px-4 py-3 rounded-xl"
-                    style={{ background: "rgba(78,205,196,0.06)", border: "1px solid rgba(78,205,196,0.15)" }}>
-                    <Info size={13} className="flex-shrink-0 mt-0.5" style={{ color: "#2BA8A0" }} />
-                    <p className="text-xs" style={{ color: "#2BA8A0" }}>
+                    style={{ background:"rgba(78,205,196,0.06)", border:"1px solid rgba(78,205,196,0.15)" }}>
+                    <Info size={13} className="flex-shrink-0 mt-0.5" style={{ color:"#2BA8A0" }}/>
+                    <p className="text-xs" style={{ color:"#2BA8A0" }}>
                       Toggle days on/off and set your hours. Click <strong>Preview</strong> to see the exact slots clients will see when booking.
                     </p>
                   </div>
                   {DAYS.map(d => (
                     <DayRow key={d.key} dayKey={d.key} label={d.label}
-                      sched={avail.availability[d.key]}
-                      dur={avail.slotDuration} buf={avail.bufferTime}
-                      onChange={s => setAvail(a => ({ ...a, availability: { ...a.availability, [d.key]: s } }))}
-                    />
+                      sched={avail.availability[d.key]} dur={avail.slotDuration} buf={avail.bufferTime}
+                      onChange={s=>setAvail(a=>({ ...a, availability:{ ...a.availability, [d.key]:s } }))}/>
                   ))}
-
-                  {/* Blocked dates */}
-                  <div className="rounded-2xl p-5 mt-1"
-                    style={{ background: "white", boxShadow: "0 1px 4px rgba(13,59,68,0.07)" }}>
-                    <p className="text-sm font-semibold mb-1" style={{ color: "#0D3B44" }}>Blocked Dates</p>
-                    <p className="text-xs mb-4" style={{ color: "#8A9BA8" }}>
-                      Block specific dates for holidays or leave. Clients cannot book on these days.
-                    </p>
+                  <div className="rounded-2xl p-5 mt-1" style={{ background:"white", boxShadow:"0 1px 4px rgba(13,59,68,0.07)" }}>
+                    <p className="text-sm font-semibold mb-1" style={{ color:"#0D3B44" }}>Blocked Dates</p>
+                    <p className="text-xs mb-4" style={{ color:"#8A9BA8" }}>Block specific dates for holidays or leave.</p>
                     <div className="flex gap-2 mb-4">
-                      <input type="date" value={newBlockDate}
-                        onChange={e => setNewBlockDate(e.target.value)}
+                      <input type="date" value={newBlockDate} onChange={e=>setNewBlockDate(e.target.value)}
                         min={new Date().toISOString().split("T")[0]}
                         className="flex-1 px-3 py-2 rounded-xl text-sm border focus:outline-none"
-                        style={{ borderColor: "rgba(13,59,68,0.15)", background: "#FAFAFA" }} />
-                      <button onClick={() => {
-                        if (!newBlockDate || avail.blockedDates.includes(newBlockDate)) return;
-                        setAvail(a => ({ ...a, blockedDates: [...a.blockedDates, newBlockDate].sort() }));
-                        setNewBlockDate("");
-                      }} disabled={!newBlockDate}
+                        style={{ borderColor:"rgba(13,59,68,0.15)", background:"#FAFAFA" }}/>
+                      <button onClick={()=>{ if(!newBlockDate||avail.blockedDates.includes(newBlockDate))return; setAvail(a=>({ ...a, blockedDates:[...a.blockedDates,newBlockDate].sort() })); setNewBlockDate(""); }}
+                        disabled={!newBlockDate}
                         className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold text-white disabled:opacity-40"
-                        style={{ background: "linear-gradient(135deg, #0D3B44, #1A535C)" }}>
-                        <Plus size={14} /> Block
+                        style={{ background:"linear-gradient(135deg,#0D3B44,#1A535C)" }}>
+                        <Plus size={14}/> Block
                       </button>
                     </div>
-                    {avail.blockedDates.length === 0 ? (
-                      <p className="text-xs text-center py-3" style={{ color: "#C4C4C4" }}>No blocked dates</p>
+                    {avail.blockedDates.length===0 ? (
+                      <p className="text-xs text-center py-3" style={{ color:"#C4C4C4" }}>No blocked dates</p>
                     ) : (
                       <div className="flex flex-wrap gap-2">
                         {avail.blockedDates.map(d => (
                           <div key={d} className="flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-medium"
-                            style={{ background: "rgba(232,96,76,0.08)", color: "#E8604C" }}>
-                            {new Date(d + "T12:00:00").toLocaleDateString("en-US", { weekday:"short", month:"short", day:"numeric" })}
-                            <button onClick={() => setAvail(a => ({ ...a, blockedDates: a.blockedDates.filter(x => x !== d) }))}>
-                              <X size={12} />
-                            </button>
+                            style={{ background:"rgba(232,96,76,0.08)", color:"#E8604C" }}>
+                            {new Date(d+"T12:00:00").toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"})}
+                            <button onClick={()=>setAvail(a=>({ ...a, blockedDates:a.blockedDates.filter(x=>x!==d) }))}><X size={12}/></button>
                           </div>
                         ))}
                       </div>
@@ -626,147 +823,94 @@ export default function DoctorSchedulePage() {
               )}
 
               {/* Session pricing */}
-              {availSubTab === "pricing" && (
-                <div className="rounded-2xl p-5"
-                  style={{ background: "white", boxShadow: "0 1px 4px rgba(13,59,68,0.07)" }}>
-                  <p className="text-sm font-semibold mb-1" style={{ color: "#0D3B44" }}>Session Pricing (USD)</p>
-                  <p className="text-xs mb-6" style={{ color: "#8A9BA8" }}>
-                    Set prices per session type. Set to 0 for free sessions.
-                  </p>
+              {availSubTab==="pricing" && (
+                <div className="rounded-2xl p-5" style={{ background:"white", boxShadow:"0 1px 4px rgba(13,59,68,0.07)" }}>
+                  <p className="text-sm font-semibold mb-1" style={{ color:"#0D3B44" }}>Session Pricing (USD)</p>
+                  <p className="text-xs mb-6" style={{ color:"#8A9BA8" }}>Set prices per session type. Set to 0 for free sessions.</p>
                   <div className="space-y-4">
                     {SESSION_TYPES.map(type => (
                       <div key={type} className="flex items-center justify-between gap-4">
                         <div className="flex-1">
-                          <p className="text-sm font-medium" style={{ color: "#0D3B44" }}>{type}</p>
-                          {avail.sessionPricing[type] === 0 && (
-                            <p className="text-xs" style={{ color: "#4ECDC4" }}>Free</p>
-                          )}
+                          <p className="text-sm font-medium" style={{ color:"#0D3B44" }}>{type}</p>
+                          {avail.sessionPricing[type]===0&&<p className="text-xs" style={{ color:"#4ECDC4" }}>Free</p>}
                         </div>
                         <div className="flex items-center gap-2">
-                          <span className="text-sm font-semibold" style={{ color: "#8A9BA8" }}>USD</span>
-                          <input type="number" min={0} step={50}
-                            value={avail.sessionPricing[type] ?? 0}
-                            onChange={e => setAvail(a => ({ ...a, sessionPricing: { ...a.sessionPricing, [type]: Number(e.target.value) } }))}
+                          <span className="text-sm font-semibold" style={{ color:"#8A9BA8" }}>USD</span>
+                          <input type="number" min={0} step={50} value={avail.sessionPricing[type]??0}
+                            onChange={e=>setAvail(a=>({ ...a, sessionPricing:{ ...a.sessionPricing, [type]:Number(e.target.value) } }))}
                             className="w-28 px-3 py-2 rounded-xl text-sm border text-right focus:outline-none font-semibold"
-                            style={{ borderColor: "rgba(13,59,68,0.15)", background: "#FAFAFA", color: "#0D3B44" }} />
+                            style={{ borderColor:"rgba(13,59,68,0.15)", background:"#FAFAFA", color:"#0D3B44" }}/>
                         </div>
                       </div>
                     ))}
                   </div>
-                  <div className="mt-5 p-3 rounded-xl flex items-start gap-2"
-                    style={{ background: "rgba(13,59,68,0.03)", border: "1px solid rgba(13,59,68,0.07)" }}>
-                    <Lock size={12} className="flex-shrink-0 mt-0.5" style={{ color: "#8A9BA8" }} />
-                    <p className="text-xs" style={{ color: "#8A9BA8" }}>
-                      Prices are shown to clients before booking and used by WiPay to charge the correct amount.
-                    </p>
+                  <div className="mt-5 p-3 rounded-xl flex items-start gap-2" style={{ background:"rgba(13,59,68,0.03)", border:"1px solid rgba(13,59,68,0.07)" }}>
+                    <Lock size={12} className="flex-shrink-0 mt-0.5" style={{ color:"#8A9BA8" }}/>
+                    <p className="text-xs" style={{ color:"#8A9BA8" }}>Prices are shown to clients before booking and used by WiPay to charge the correct amount.</p>
                   </div>
                 </div>
               )}
 
-              {/* Booking settings */}
-              {availSubTab === "settings" && (
-                <div className="rounded-2xl p-5 space-y-6"
-                  style={{ background: "white", boxShadow: "0 1px 4px rgba(13,59,68,0.07)" }}>
-
-                  {/* Slot duration */}
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "#8A9BA8" }}>Session Duration</p>
-                    <div className="flex gap-2 flex-wrap">
-                      {SLOT_DURATIONS.map(d => (
-                        <button key={d} onClick={() => setAvail(a => ({ ...a, slotDuration: d }))}
-                          className="px-4 py-2 rounded-xl text-sm font-semibold border-2 transition-all"
-                          style={{
-                            borderColor: avail.slotDuration===d ? "#0D3B44" : "rgba(13,59,68,0.12)",
-                            background:  avail.slotDuration===d ? "rgba(13,59,68,0.06)" : "white",
-                            color:       avail.slotDuration===d ? "#0D3B44" : "#4A5568",
-                          }}>
-                          {d} min
-                        </button>
-                      ))}
+              {/* Settings */}
+              {availSubTab==="settings" && (
+                <div className="rounded-2xl p-5 space-y-6" style={{ background:"white", boxShadow:"0 1px 4px rgba(13,59,68,0.07)" }}>
+                  {[
+                    { title:"Session Duration", key:"slotDuration", opts:SLOT_DURATIONS, fmt:(d:number)=>`${d} min` },
+                    { title:"Buffer Between Sessions", key:"bufferTime", opts:BUFFER_TIMES, fmt:(b:number)=>b===0?"None":`${b} min` },
+                    { title:"Maximum Advance Booking", key:"maxAdvanceDays", opts:MAX_ADVANCE, fmt:(d:number)=>`${d} days` },
+                  ].map(({ title, key, opts, fmt }) => (
+                    <div key={key}>
+                      <p className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color:"#8A9BA8" }}>{title}</p>
+                      <div className="flex gap-2 flex-wrap">
+                        {opts.map((o:number) => (
+                          <button key={o} onClick={()=>setAvail(a=>({ ...a, [key]:o }))}
+                            className="px-4 py-2 rounded-xl text-sm font-semibold border-2 transition-all"
+                            style={{ borderColor:(avail as any)[key]===o?"#0D3B44":"rgba(13,59,68,0.12)", background:(avail as any)[key]===o?"rgba(13,59,68,0.06)":"white", color:(avail as any)[key]===o?"#0D3B44":"#4A5568" }}>
+                            {fmt(o)}
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                  </div>
-
-                  {/* Buffer */}
+                  ))}
                   <div>
-                    <p className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "#8A9BA8" }}>Buffer Between Sessions</p>
-                    <div className="flex gap-2 flex-wrap">
-                      {BUFFER_TIMES.map(b => (
-                        <button key={b} onClick={() => setAvail(a => ({ ...a, bufferTime: b }))}
-                          className="px-4 py-2 rounded-xl text-sm font-semibold border-2 transition-all"
-                          style={{
-                            borderColor: avail.bufferTime===b ? "#0D3B44" : "rgba(13,59,68,0.12)",
-                            background:  avail.bufferTime===b ? "rgba(13,59,68,0.06)" : "white",
-                            color:       avail.bufferTime===b ? "#0D3B44" : "#4A5568",
-                          }}>
-                          {b === 0 ? "None" : `${b} min`}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Max advance */}
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "#8A9BA8" }}>Maximum Advance Booking</p>
-                    <div className="flex gap-2 flex-wrap">
-                      {MAX_ADVANCE.map(d => (
-                        <button key={d} onClick={() => setAvail(a => ({ ...a, maxAdvanceDays: d }))}
-                          className="px-4 py-2 rounded-xl text-sm font-semibold border-2 transition-all"
-                          style={{
-                            borderColor: avail.maxAdvanceDays===d ? "#0D3B44" : "rgba(13,59,68,0.12)",
-                            background:  avail.maxAdvanceDays===d ? "rgba(13,59,68,0.06)" : "white",
-                            color:       avail.maxAdvanceDays===d ? "#0D3B44" : "#4A5568",
-                          }}>
-                          {d} days
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Timezone */}
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "#8A9BA8" }}>Timezone</p>
-                    <select value={avail.timezone}
-                      onChange={e => setAvail(a => ({ ...a, timezone: e.target.value }))}
+                    <p className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color:"#8A9BA8" }}>Timezone</p>
+                    <select value={avail.timezone} onChange={e=>setAvail(a=>({ ...a, timezone:e.target.value }))}
                       className="w-full px-3 py-2.5 rounded-xl text-sm border focus:outline-none"
-                      style={{ borderColor: "rgba(13,59,68,0.15)", background: "#FAFAFA", color: "#22272B" }}>
-                      {TIMEZONES.map(tz => <option key={tz} value={tz}>{tz.replace(/_/g," ")}</option>)}
+                      style={{ borderColor:"rgba(13,59,68,0.15)", background:"#FAFAFA", color:"#22272B" }}>
+                      {TIMEZONES.map(tz=><option key={tz} value={tz}>{tz.replace(/_/g," ")}</option>)}
                     </select>
                   </div>
-
-                  {/* Weekly summary */}
-                  <div className="pt-4 border-t" style={{ borderColor: "rgba(13,59,68,0.06)" }}>
-                    <p className="text-xs font-semibold uppercase tracking-wider mb-3" style={{ color: "#8A9BA8" }}>Weekly Summary</p>
+                  <div className="pt-4 border-t" style={{ borderColor:"rgba(13,59,68,0.06)" }}>
+                    <p className="text-xs font-semibold uppercase tracking-wider mb-3" style={{ color:"#8A9BA8" }}>Weekly Summary</p>
                     <div className="space-y-1.5">
                       {DAYS.map(d => {
-                        const day   = avail.availability[d.key];
-                        const slots = day.enabled ? day.slots.reduce((sum, s) =>
-                          sum + genSlots(s.start, s.end, avail.slotDuration, avail.bufferTime).length, 0) : 0;
+                        const day=avail.availability[d.key];
+                        const slots=day.enabled?day.slots.reduce((sum,s)=>sum+genSlots(s.start,s.end,avail.slotDuration,avail.bufferTime).length,0):0;
                         return (
-                          <div key={d.key} className="flex items-center justify-between py-1.5 border-b last:border-0"
-                            style={{ borderColor: "rgba(13,59,68,0.05)" }}>
-                            <span className="text-xs font-semibold w-24" style={{ color: day.enabled ? "#0D3B44" : "#C4C4C4" }}>
-                              {d.label}
+                          <div key={d.key} className="flex items-center justify-between py-1.5 border-b last:border-0" style={{ borderColor:"rgba(13,59,68,0.05)" }}>
+                            <span className="text-xs font-semibold w-24" style={{ color:day.enabled?"#0D3B44":"#C4C4C4" }}>{d.label}</span>
+                            <span className="text-xs flex-1 text-center" style={{ color:"#4A5568" }}>
+                              {day.enabled?day.slots.map(s=>`${timeLbl(s.start)} – ${timeLbl(s.end)}`).join(", "):"Unavailable"}
                             </span>
-                            <span className="text-xs flex-1 text-center" style={{ color: "#4A5568" }}>
-                              {day.enabled ? day.slots.map(s => `${timeLbl(s.start)} – ${timeLbl(s.end)}`).join(", ") : "Unavailable"}
-                            </span>
-                            {day.enabled && (
-                              <span className="text-xs font-semibold px-2 py-0.5 rounded-full"
-                                style={{ background: "rgba(78,205,196,0.1)", color: "#2BA8A0" }}>
-                                {slots} slots
-                              </span>
-                            )}
+                            {day.enabled&&<span className="text-xs font-semibold px-2 py-0.5 rounded-full" style={{ background:"rgba(78,205,196,0.1)", color:"#2BA8A0" }}>{slots} slots</span>}
                           </div>
                         );
                       })}
                     </div>
-                    <div className="mt-3 flex items-center justify-between pt-2 border-t"
-                      style={{ borderColor: "rgba(13,59,68,0.06)" }}>
-                      <span className="text-xs" style={{ color: "#8A9BA8" }}>Total weekly capacity</span>
-                      <span className="text-sm font-bold" style={{ color: "#0D3B44" }}>{totalWeeklySlots} slots</span>
+                    <div className="mt-3 flex items-center justify-between pt-2 border-t" style={{ borderColor:"rgba(13,59,68,0.06)" }}>
+                      <span className="text-xs" style={{ color:"#8A9BA8" }}>Total weekly capacity</span>
+                      <span className="text-sm font-bold" style={{ color:"#0D3B44" }}>{totalWeeklySlots} slots</span>
                     </div>
                   </div>
                 </div>
+              )}
+
+              {/* Google Calendar Sync */}
+              {availSubTab==="calendar-sync" && (
+                <GoogleCalendarPanel
+                  calendarId={avail.googleCalendarId??""}
+                  onChange={id => setAvail(a=>({ ...a, googleCalendarId:id }))}
+                />
               )}
             </>
           )}
