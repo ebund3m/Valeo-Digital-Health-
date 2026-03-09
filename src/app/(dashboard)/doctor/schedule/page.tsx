@@ -144,7 +144,7 @@ function FilterTab({ label, count, active, onClick }: { label:string; count:numb
 }
 
 function AppointmentCard({ appt, onApprove, onReject, loading }: {
-  appt:Appointment; onApprove:(id:string)=>void; onReject:(id:string)=>void; loading:string|null;
+  appt:Appointment; onApprove:(id:string)=>Promise<void>; onReject:(id:string)=>Promise<void>; loading:string|null;
 }) {
   const isActing = loading === appt.id;
   return (
