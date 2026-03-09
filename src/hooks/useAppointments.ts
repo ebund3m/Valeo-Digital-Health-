@@ -12,7 +12,7 @@ export interface Appointment {
   id: string; clientId: string; clientName: string; clientEmail: string;
   doctorId: string; type: string; date: string; time: string;
   duration: number; status: AppointmentStatus; notes?: string;
-  createdAt: any; updatedAt: any;
+  createdAt: any; updatedAt: any; meetLink?:   string;
 }
 
 export function useClientAppointments() {

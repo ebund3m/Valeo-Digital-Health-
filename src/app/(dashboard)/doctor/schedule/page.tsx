@@ -182,8 +182,8 @@ function AppointmentCard({ appt, onApprove, onReject, loading }: {
           <p className="text-xs italic" style={{ color:"#4A5568" }}>{appt.notes}</p>
         </div>
       )}
-      {appt.meetLink && (
-        <a href={appt.meetLink} target="_blank" rel="noopener noreferrer"
+      {(appt as any).meetLink && (
+        <a href={(appt as any).meetLink} target="_blank" rel="noopener noreferrer"
           className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium mb-4 transition-opacity hover:opacity-80"
           style={{ background:"rgba(66,133,244,0.08)", color:"#4285F4", border:"1px solid rgba(66,133,244,0.15)" }}>
           <ExternalLink size={12}/> Join Google Meet
