@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
-import { doc, getDoc, setDoc, serverTimestamp, collection, getDocs, query, where } from "firebase/firestore";
+import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { useDoctorAppointments, updateAppointmentStatus, type Appointment } from "@/hooks/useAppointments";
@@ -43,7 +43,54 @@ const SESSION_TYPES   = ["Individual Therapy","Couples Therapy","Life Coaching",
 const SLOT_DURATIONS  = [30, 45, 60, 90];
 const BUFFER_TIMES    = [0, 5, 10, 15, 30];
 const MAX_ADVANCE     = [7, 14, 30, 60, 90];
-const TIMEZONES       = ["America/Port_of_Spain","America/New_York","America/Chicago","America/Denver","America/Los_Angeles","Europe/London","Europe/Paris","Asia/Tokyo"];
+// Full Caribbean + global timezone list
+const TIMEZONES = [
+  // Caribbean
+  "America/Barbados",
+  "America/St_Vincent",
+  "America/Port_of_Spain",
+  "America/Jamaica",
+  "America/Martinique",
+  "America/Guadeloupe",
+  "America/St_Lucia",
+  "America/Grenada",
+  "America/Antigua",
+  "America/Dominica",
+  "America/St_Kitts",
+  "America/Anguilla",
+  "America/Aruba",
+  "America/Curacao",
+  "America/Nassau",
+  "America/Puerto_Rico",
+  "America/Santo_Domingo",
+  "America/Havana",
+  "America/Port-au-Prince",
+  // North America
+  "America/New_York",
+  "America/Chicago",
+  "America/Denver",
+  "America/Los_Angeles",
+  "America/Toronto",
+  "America/Vancouver",
+  // Europe
+  "Europe/London",
+  "Europe/Paris",
+  "Europe/Berlin",
+  "Europe/Amsterdam",
+  // Rest of world
+  "Asia/Dubai",
+  "Asia/Tokyo",
+  "Australia/Sydney",
+];
+
+// Auto-detect the browser's timezone — falls back to Barbados
+function detectTimezone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Barbados";
+  } catch {
+    return "America/Barbados";
+  }
+}
 
 const DEFAULT_AVAIL: AvailabilitySchedule = {
   availability: {
@@ -58,7 +105,7 @@ const DEFAULT_AVAIL: AvailabilitySchedule = {
   slotDuration:   60,
   bufferTime:     10,
   maxAdvanceDays: 30,
-  timezone:       "America/Port_of_Spain",
+  timezone:       typeof window !== "undefined" ? detectTimezone() : "America/Barbados",
   blockedDates:   [],
   sessionPricing: { "Individual Therapy":150,"Couples Therapy":200,"Life Coaching":120,"Workplace Wellness":180,"Free Consultation":0 },
   googleCalendarId: "",
@@ -176,8 +223,10 @@ const STATUS_DOT: Record<string,string> = {
 };
 
 function CalendarTab({ appointments }: { appointments: Appointment[] }) {
-  // ⚠️ Hydration fix: never call new Date() at render time — server is UTC,
-  // browser is America/Port_of_Spain (UTC-4). Set client-side only via useEffect.
+  // ⚠️ Hydration fix: never call new Date() at render time.
+  // Vercel server runs UTC. Doctors are in Barbados, St. Vincent, or anywhere worldwide.
+  // Any mismatch causes React hydration errors → blank calendar.
+  // Solution: initialise dates to null, set client-side only in useEffect.
   const [current,  setCurrent]  = useState<Date|null>(null);
   const [today,    setToday]    = useState<Date|null>(null);
   const [selected, setSelected] = useState<string|null>(null);
@@ -594,7 +643,12 @@ export default function DoctorSchedulePage() {
     if (!user) return;
     (async () => {
       const snap = await getDoc(doc(db,"schedules",user.uid));
-      if (snap.exists()) setAvail(snap.data() as AvailabilitySchedule);
+      if (snap.exists()) {
+        setAvail(snap.data() as AvailabilitySchedule);
+      } else {
+        // New doctor — auto-detect their timezone
+        setAvail(prev => ({ ...prev, timezone: detectTimezone() }));
+      }
       setAvailLoading(false);
     })();
   }, [user]);
