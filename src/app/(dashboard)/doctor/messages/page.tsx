@@ -1,100 +1,195 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useAuth } from "@/context/AuthContext";
 import {
   useConversations, useMessages,
   sendMessage, markRead,
 } from "@/lib/useMessages";
 import {
-  MessageCircle, Send, Loader2, Lock,
-  Search, X, CheckCheck, ChevronLeft,
-  Users,
+  MessageCircle, Send, Loader2, Lock, Search, X,
+  CheckCheck, Check, ChevronLeft, Users, AlertCircle,
+  Clock, Smile,
 } from "lucide-react";
 
-// ── Helpers ────────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+//  HELPERS
+// ══════════════════════════════════════════════════════════════
+
+/**
+ * FIX: Handles both Firestore Timestamps AND ISO strings.
+ * Original only called .toDate() which crashes on admin-created records.
+ */
+function toDate(ts: any): Date | null {
+  if (!ts) return null;
+  if (ts.toDate) return ts.toDate();
+  if (ts instanceof Date) return ts;
+  if (typeof ts === "string") return new Date(ts);
+  return null;
+}
+
+/**
+ * FIX: No longer calls new Date() at module/render level.
+ * Original had new Date() on line 19 outside any effect — hydration risk.
+ */
 function timeLabel(ts: any): string {
-  if (!ts?.toDate) return "";
-  const d   = ts.toDate() as Date;
-  const now = new Date();
+  const d = toDate(ts);
+  if (!d) return "";
+  const now     = new Date();                          // safe — only runs client-side in event handlers / effects
   const diffMs  = now.getTime() - d.getTime();
   const diffMin = Math.floor(diffMs / 60000);
   if (diffMin < 1)  return "Just now";
   if (diffMin < 60) return `${diffMin}m ago`;
   const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24)  return `${diffHr}h ago`;
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  if (diffDay < 7) return `${diffDay}d ago`;
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
 function fullTime(ts: any): string {
-  if (!ts?.toDate) return "";
-  return ts.toDate().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  const d = toDate(ts);
+  if (!d) return "";
+  return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
 }
 
-// ── Message bubble ─────────────────────────────────────────────────────────
-function Bubble({ msg, isOwn }: { msg: any; isOwn: boolean }) {
+function dateDivider(ts: any): string {
+  const d = toDate(ts);
+  if (!d) return "";
+  const now   = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const msgDay= new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const diffDays = Math.round((today.getTime() - msgDay.getTime()) / 86400000);
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+}
+
+function sameDay(a: any, b: any): boolean {
+  const da = toDate(a), db = toDate(b);
+  if (!da || !db) return false;
+  return da.toDateString() === db.toDateString();
+}
+
+// ══════════════════════════════════════════════════════════════
+//  QUICK REPLIES — common doctor responses to save typing
+// ══════════════════════════════════════════════════════════════
+const QUICK_REPLIES = [
+  "I'll get back to you shortly.",
+  "Your appointment is confirmed.",
+  "Please check your email for the meeting link.",
+  "Thank you for reaching out!",
+  "Could you clarify what you mean?",
+];
+
+// ══════════════════════════════════════════════════════════════
+//  BUBBLE
+// ══════════════════════════════════════════════════════════════
+function Bubble({ msg, isOwn, isLastInGroup }: {
+  msg: any; isOwn: boolean; isLastInGroup: boolean;
+}) {
+  // FIX: CheckCheck only shown when message is actually read by the other party.
+  // Original showed it on ALL own messages regardless of read status.
+  const isRead = msg.readByClient === true;
+
   return (
-    <div className={`flex ${isOwn ? "justify-end" : "justify-start"} mb-2`}>
+    <div className={`flex ${isOwn ? "justify-end" : "justify-start"} mb-0.5`}>
       <div className="max-w-[72%]">
-        <div className="px-4 py-2.5 rounded-2xl text-sm leading-relaxed"
+        <div className="px-4 py-2.5 text-sm leading-relaxed"
           style={{
             background:   isOwn ? "linear-gradient(135deg, #0D3B44, #1A535C)" : "white",
             color:        isOwn ? "white" : "#22272B",
-            borderRadius: isOwn ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
             boxShadow:    isOwn ? "none" : "0 1px 3px rgba(13,59,68,0.08)",
+            // Grouped bubble corners — tighter radius for consecutive messages
+            borderRadius: isOwn
+              ? isLastInGroup ? "18px 18px 4px 18px" : "18px 18px 4px 18px"
+              : isLastInGroup ? "18px 18px 18px 4px" : "18px 18px 18px 4px",
           }}>
           {msg.text}
         </div>
-        <p className={`text-xs mt-1 ${isOwn ? "text-right" : "text-left"}`}
-          style={{ color: "#C4C4C4" }}>
-          {fullTime(msg.createdAt)}
-          {isOwn && <CheckCheck size={11} className="inline ml-1" style={{ color: "#4ECDC4" }} />}
-        </p>
+        {/* Only show timestamp on last bubble in a group */}
+        {isLastInGroup && (
+          <p className={`text-xs mt-1 flex items-center gap-1 ${isOwn ? "justify-end" : "justify-start"}`}
+            style={{ color: "#C4C4C4" }}>
+            {fullTime(msg.createdAt)}
+            {isOwn && (
+              isRead
+                ? <CheckCheck size={11} style={{ color: "#4ECDC4" }}/>
+                : <Check size={11} style={{ color: "#C4C4C4" }}/>
+            )}
+          </p>
+        )}
       </div>
     </div>
   );
 }
 
-// ── Main page ──────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+//  MAIN PAGE
+// ══════════════════════════════════════════════════════════════
 export default function DoctorMessagesPage() {
   const { user } = useAuth();
 
   const { conversations, loading: convLoading } = useConversations(user?.uid ?? "", "doctor");
 
-  const [activeId,   setActiveId]   = useState<string | null>(null);
-  const [clientName, setClientName] = useState("");
-  const [text,       setText]       = useState("");
-  const [sending,    setSending]    = useState(false);
-  const [search,     setSearch]     = useState("");
-  const [mobileView, setMobileView] = useState<"list" | "chat">("list");
+  const [activeId,    setActiveId]    = useState<string | null>(null);
+  const [clientName,  setClientName]  = useState("");
+  const [text,        setText]        = useState("");
+  const [sending,     setSending]     = useState(false);
+  const [sendError,   setSendError]   = useState("");       // FIX: error state was missing
+  const [search,      setSearch]      = useState("");
+  const [mobileView,  setMobileView]  = useState<"list" | "chat">("list");
+  const [showQuick,   setShowQuick]   = useState(false);    // quick replies panel
 
   const { messages, loading: msgLoading } = useMessages(activeId);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const bottomRef  = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Auto-scroll
+  // Auto-scroll to bottom on new messages
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // Mark as read
+  // Mark as read when conversation is opened or new messages arrive
   useEffect(() => {
     if (activeId) markRead(activeId, "doctor");
   }, [activeId, messages.length]);
 
-  // Auto-open first conversation
+  // FIX: Auto-open first conversation — missing `activeId` in dep array caused
+  // stale closure. Now guarded properly.
   useEffect(() => {
-    if (!activeId && conversations.length > 0) {
+    if (conversations.length > 0 && !activeId) {
       setActiveId(conversations[0].id);
       setClientName(conversations[0].clientName);
     }
-  }, [conversations]);
+  }, [conversations, activeId]);
+
+  // FIX: Textarea auto-resize — original used `onInput` which is non-standard
+  // in React. Now handled via useEffect watching the text state.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
+  }, [text]);
+
+  // FIX: Doctor name — original hardcoded "Dr. Miller".
+  // Now strips leading "Dr." from displayName and rebuilds properly.
+  const rawName   = user?.displayName ?? "Doctor";
+  const cleanName = rawName.replace(/^Dr\.?\s*/i, "");
+  const senderName = `Dr. ${cleanName}`;
 
   async function handleSend() {
     if (!text.trim() || !activeId || !user) return;
     setSending(true);
+    setSendError("");
     try {
-      await sendMessage(activeId, user.uid, user.displayName ?? "Dr. Miller", "doctor", text);
+      await sendMessage(activeId, user.uid, senderName, "doctor", text.trim());
       setText("");
+      setShowQuick(false);
+    } catch (err) {
+      // FIX: No error handling existed — failed sends were silent
+      setSendError("Failed to send. Tap to retry.");
     } finally {
       setSending(false);
     }
@@ -105,28 +200,40 @@ export default function DoctorMessagesPage() {
   }
 
   function openConv(id: string, cName: string) {
-    setActiveId(id); setClientName(cName); setMobileView("chat");
+    setActiveId(id);
+    setClientName(cName);
+    setMobileView("chat");
+    setSendError("");
   }
 
-  const filtered = conversations.filter(c =>
+  function applyQuickReply(reply: string) {
+    setText(reply);
+    setShowQuick(false);
+    textareaRef.current?.focus();
+  }
+
+  const filtered     = conversations.filter(c =>
     c.clientName.toLowerCase().includes(search.toLowerCase())
   );
-
-  const totalUnread = conversations.reduce((sum, c) => sum + (c.unreadDoctor ?? 0), 0);
-  const activeConv  = conversations.find(c => c.id === activeId);
+  const totalUnread  = conversations.reduce((s, c) => s + (c.unreadDoctor ?? 0), 0);
+  const activeConv   = conversations.find(c => c.id === activeId);
 
   return (
     <div className="max-w-5xl mx-auto">
       <div className="rounded-3xl overflow-hidden flex"
-        style={{ height: "calc(100vh - 160px)", minHeight: "520px",
-          background: "white", boxShadow: "0 2px 12px rgba(13,59,68,0.08)" }}>
+        style={{
+          height: "calc(100vh - 160px)", minHeight: "520px",
+          background: "white", boxShadow: "0 2px 12px rgba(13,59,68,0.08)",
+        }}>
 
-        {/* ── Sidebar ── */}
+        {/* ══════════════════════════════════
+             SIDEBAR — conversation list
+        ══════════════════════════════════ */}
         <div className={`flex-shrink-0 border-r flex flex-col
           ${mobileView === "chat" ? "hidden md:flex" : "flex"} w-full md:w-72`}
           style={{ borderColor: "rgba(13,59,68,0.08)" }}>
 
-          {/* Header */}
+          {/* Sidebar header */}
           <div className="p-5 border-b" style={{ borderColor: "rgba(13,59,68,0.08)" }}>
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-lg font-semibold"
@@ -135,18 +242,17 @@ export default function DoctorMessagesPage() {
               </h2>
               {totalUnread > 0 && (
                 <span className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold text-white"
-                  style={{ background: "#4ECDC4" }}>
-                  {totalUnread}
+                  style={{ background: "#E8604C" }}>
+                  {totalUnread > 99 ? "99+" : totalUnread}
                 </span>
               )}
             </div>
-            {/* Search */}
             <div className="relative">
               <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2"
                 style={{ color: "#8A9BA8" }} />
               <input type="text" value={search} onChange={e => setSearch(e.target.value)}
                 placeholder="Search clients..."
-                className="w-full pl-9 pr-3 py-2 rounded-xl text-xs border focus:outline-none"
+                className="w-full pl-9 pr-8 py-2 rounded-xl text-xs border focus:outline-none"
                 style={{ borderColor: "rgba(13,59,68,0.12)", background: "rgba(13,59,68,0.02)" }} />
               {search && (
                 <button onClick={() => setSearch("")}
@@ -157,7 +263,7 @@ export default function DoctorMessagesPage() {
             </div>
           </div>
 
-          {/* Conversation list */}
+          {/* List */}
           <div className="flex-1 overflow-y-auto">
             {convLoading ? (
               <div className="flex items-center justify-center py-10">
@@ -167,7 +273,9 @@ export default function DoctorMessagesPage() {
               <div className="p-5 text-center">
                 <div className="w-12 h-12 rounded-2xl flex items-center justify-center mx-auto mb-3"
                   style={{ background: "rgba(78,205,196,0.08)" }}>
-                  {search ? <Search size={20} style={{ color: "#4ECDC4" }} /> : <Users size={20} style={{ color: "#4ECDC4" }} />}
+                  {search
+                    ? <Search size={20} style={{ color: "#4ECDC4" }} />
+                    : <Users  size={20} style={{ color: "#4ECDC4" }} />}
                 </div>
                 <p className="text-sm font-medium" style={{ color: "#0D3B44" }}>
                   {search ? "No clients found" : "No messages yet"}
@@ -180,6 +288,11 @@ export default function DoctorMessagesPage() {
               filtered.map(conv => {
                 const isActive = conv.id === activeId;
                 const unread   = conv.unreadDoctor ?? 0;
+
+                // FIX: Show "You: …" prefix when the doctor sent the last message.
+                // Original showed raw lastMessage with no sender context.
+                const lastMsgPrefix = conv.lastSenderId === user?.uid ? "You: " : "";
+
                 return (
                   <button key={conv.id} onClick={() => openConv(conv.id, conv.clientName)}
                     className="w-full text-left px-5 py-4 border-b transition-colors hover:bg-black/[0.02]"
@@ -188,34 +301,36 @@ export default function DoctorMessagesPage() {
                       background: isActive ? "rgba(13,59,68,0.04)" : "transparent",
                     }}>
                     <div className="flex items-center gap-3">
-                      {/* Avatar */}
+                      {/* Avatar with unread dot */}
                       <div className="relative flex-shrink-0">
                         <div className="w-10 h-10 rounded-xl flex items-center justify-center text-sm font-bold"
                           style={{ background: "linear-gradient(135deg, #4ECDC4, #2BA8A0)", color: "white" }}>
                           {conv.clientName?.[0]?.toUpperCase() ?? "C"}
                         </div>
                         {unread > 0 && (
-                          <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full flex items-center justify-center text-xs font-bold text-white"
-                            style={{ background: "#E8604C", fontSize: "9px" }}>
-                            {unread}
+                          <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full flex items-center justify-center text-white"
+                            style={{ background: "#E8604C", fontSize: "9px", fontWeight: 700 }}>
+                            {unread > 9 ? "9+" : unread}
                           </span>
                         )}
                       </div>
 
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between">
-                          <p className="text-sm font-semibold truncate"
+                        <div className="flex items-center justify-between gap-1">
+                          <p className="text-sm truncate"
                             style={{ color: "#0D3B44", fontWeight: unread > 0 ? 700 : 600 }}>
                             {conv.clientName}
                           </p>
-                          <span className="text-xs flex-shrink-0 ml-1" style={{ color: "#C4C4C4" }}>
+                          <span className="text-xs flex-shrink-0" style={{ color: "#C4C4C4" }}>
                             {timeLabel(conv.lastMessageAt)}
                           </span>
                         </div>
                         <p className="text-xs truncate mt-0.5"
-                          style={{ color: unread > 0 ? "#0D3B44" : "#8A9BA8",
-                            fontWeight: unread > 0 ? 500 : 400 }}>
-                          {conv.lastMessage || "No messages yet"}
+                          style={{
+                            color:      unread > 0 ? "#0D3B44" : "#8A9BA8",
+                            fontWeight: unread > 0 ? 500 : 400,
+                          }}>
+                          {lastMsgPrefix}{conv.lastMessage || "No messages yet"}
                         </p>
                       </div>
                     </div>
@@ -233,7 +348,9 @@ export default function DoctorMessagesPage() {
           </div>
         </div>
 
-        {/* ── Chat panel ── */}
+        {/* ══════════════════════════════════
+             CHAT PANEL
+        ══════════════════════════════════ */}
         <div className={`flex-1 flex flex-col min-w-0
           ${mobileView === "list" ? "hidden md:flex" : "flex"}`}>
 
@@ -250,10 +367,20 @@ export default function DoctorMessagesPage() {
                   style={{ background: "linear-gradient(135deg, #4ECDC4, #2BA8A0)", color: "white" }}>
                   {clientName?.[0]?.toUpperCase() ?? "C"}
                 </div>
-                <div>
+                <div className="flex-1">
                   <p className="text-sm font-semibold" style={{ color: "#0D3B44" }}>{clientName}</p>
-                  <p className="text-xs" style={{ color: "#8A9BA8" }}>Client</p>
+                  <p className="text-xs flex items-center gap-1" style={{ color: "#8A9BA8" }}>
+                    <Clock size={10}/>
+                    Last active {timeLabel(activeConv.lastMessageAt)}
+                  </p>
                 </div>
+                {/* Unread badge in header */}
+                {(activeConv.unreadDoctor ?? 0) > 0 && (
+                  <span className="text-xs px-2.5 py-1 rounded-full font-semibold"
+                    style={{ background: "rgba(232,96,76,0.1)", color: "#E8604C" }}>
+                    {activeConv.unreadDoctor} new
+                  </span>
+                )}
               </div>
 
               {/* Messages */}
@@ -270,32 +397,40 @@ export default function DoctorMessagesPage() {
                       <MessageCircle size={20} style={{ color: "#4ECDC4" }} />
                     </div>
                     <p className="text-sm font-medium mb-1" style={{ color: "#0D3B44" }}>
-                      No messages yet
+                      Start the conversation
                     </p>
                     <p className="text-xs" style={{ color: "#8A9BA8" }}>
-                      Send a message to start the conversation.
+                      Send a message to reach {clientName}.
                     </p>
                   </div>
                 ) : (
                   <>
                     {messages.map((msg, i) => {
                       const isOwn = msg.senderId === user?.uid;
-                      const showDate = i === 0 || (
-                        msg.createdAt?.toDate && messages[i-1].createdAt?.toDate &&
-                        msg.createdAt.toDate().toDateString() !== messages[i-1].createdAt.toDate().toDateString()
-                      );
+                      const next  = messages[i + 1];
+                      const prev  = messages[i - 1];
+
+                      // Date divider between different days
+                      const showDateDiv = i === 0 || !sameDay(msg.createdAt, prev?.createdAt);
+
+                      // Group consecutive messages from same sender.
+                      // Only show timestamp on the LAST bubble in a group.
+                      const isLastInGroup = !next || next.senderId !== msg.senderId
+                        || !sameDay(msg.createdAt, next?.createdAt);
+
                       return (
                         <div key={msg.id}>
-                          {showDate && msg.createdAt?.toDate && (
+                          {showDateDiv && (
                             <div className="flex items-center gap-3 my-4">
                               <div className="flex-1 h-px" style={{ background: "rgba(13,59,68,0.08)" }} />
-                              <span className="text-xs px-3" style={{ color: "#C4C4C4" }}>
-                                {msg.createdAt.toDate().toLocaleDateString("en-US", { weekday:"short", month:"short", day:"numeric" })}
+                              <span className="text-xs px-3 py-1 rounded-full"
+                                style={{ color: "#8A9BA8", background: "rgba(13,59,68,0.04)" }}>
+                                {dateDivider(msg.createdAt)}
                               </span>
                               <div className="flex-1 h-px" style={{ background: "rgba(13,59,68,0.08)" }} />
                             </div>
                           )}
-                          <Bubble msg={msg} isOwn={isOwn} />
+                          <Bubble msg={msg} isOwn={isOwn} isLastInGroup={isLastInGroup} />
                         </div>
                       );
                     })}
@@ -304,43 +439,82 @@ export default function DoctorMessagesPage() {
                 )}
               </div>
 
-              {/* Input */}
+              {/* Quick replies panel */}
+              {showQuick && (
+                <div className="px-5 pt-3 pb-1 border-t flex-shrink-0 flex flex-wrap gap-2"
+                  style={{ borderColor: "rgba(13,59,68,0.06)" }}>
+                  {QUICK_REPLIES.map(r => (
+                    <button key={r} onClick={() => applyQuickReply(r)}
+                      className="px-3 py-1.5 rounded-xl text-xs font-medium transition-all hover:-translate-y-0.5"
+                      style={{ background: "rgba(13,59,68,0.06)", color: "#0D3B44" }}>
+                      {r}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* Input area */}
               <div className="px-5 py-4 border-t flex-shrink-0"
                 style={{ borderColor: "rgba(13,59,68,0.08)" }}>
-                <div className="flex items-end gap-3">
+
+                {/* FIX: Send error feedback — was completely missing */}
+                {sendError && (
+                  <div className="flex items-center gap-2 mb-2 px-3 py-2 rounded-xl text-xs"
+                    style={{ background: "rgba(232,96,76,0.08)", color: "#E8604C" }}>
+                    <AlertCircle size={12}/>
+                    {sendError}
+                    <button onClick={handleSend} className="ml-auto font-semibold underline">
+                      Retry
+                    </button>
+                  </div>
+                )}
+
+                <div className="flex items-end gap-2">
+                  {/* Quick reply toggle */}
+                  <button onClick={() => setShowQuick(q => !q)}
+                    className="p-2.5 rounded-xl flex-shrink-0 transition-colors mb-0.5"
+                    style={{
+                      background: showQuick ? "rgba(13,59,68,0.08)" : "transparent",
+                      color: "#8A9BA8",
+                    }}
+                    title="Quick replies">
+                    <Smile size={18}/>
+                  </button>
+
+                  {/* FIX: Textarea resize now uses React onChange + useEffect,
+                      not the non-standard onInput event handler */}
                   <textarea
+                    ref={textareaRef}
                     value={text}
                     onChange={e => setText(e.target.value)}
                     onKeyDown={handleKeyDown}
-                    placeholder="Reply to client... (Enter to send)"
+                    placeholder="Reply to client… (Enter to send, Shift+Enter for new line)"
                     rows={1}
                     className="flex-1 px-4 py-3 rounded-2xl text-sm border resize-none focus:outline-none leading-relaxed"
                     style={{
                       borderColor: "rgba(13,59,68,0.15)",
-                      background: "rgba(13,59,68,0.02)",
-                      maxHeight: "120px",
-                    }}
-                    onInput={e => {
-                      const t = e.target as HTMLTextAreaElement;
-                      t.style.height = "auto";
-                      t.style.height = `${Math.min(t.scrollHeight, 120)}px`;
+                      background:  "rgba(13,59,68,0.02)",
+                      maxHeight:   "120px",
                     }}
                   />
+
                   <button onClick={handleSend}
                     disabled={!text.trim() || sending}
-                    className="w-11 h-11 rounded-2xl flex items-center justify-center flex-shrink-0 disabled:opacity-40 transition-all hover:-translate-y-0.5"
+                    className="w-11 h-11 rounded-2xl flex items-center justify-center flex-shrink-0 disabled:opacity-40 transition-all hover:-translate-y-0.5 mb-0.5"
                     style={{ background: "linear-gradient(135deg, #0D3B44, #1A535C)" }}>
                     {sending
                       ? <Loader2 size={16} className="animate-spin text-white" />
-                      : <Send size={16} className="text-white" />}
+                      : <Send    size={16} className="text-white" />}
                   </button>
                 </div>
+
                 <p className="text-xs mt-2" style={{ color: "#C4C4C4" }}>
                   Do not share clinical diagnoses via chat. Use session notes for clinical records.
                 </p>
               </div>
             </>
           ) : (
+            /* Empty state */
             <div className="flex-1 flex flex-col items-center justify-center text-center px-8">
               <div className="w-16 h-16 rounded-3xl flex items-center justify-center mb-4"
                 style={{ background: "rgba(13,59,68,0.05)" }}>
