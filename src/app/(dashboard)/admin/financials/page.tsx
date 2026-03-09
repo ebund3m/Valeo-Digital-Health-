@@ -2,45 +2,52 @@
 
 import { useState, useEffect, useMemo } from "react";
 import {
-  collection, getDocs, orderBy, query, where,
+  collection, getDocs, addDoc, orderBy, query,
+  serverTimestamp,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
+import { useAuth } from "@/hooks/useAuth";
 import {
   DollarSign, TrendingUp, TrendingDown, Users,
   Search, X, Loader2, CheckCircle, Clock,
   XCircle, ArrowUpRight, Filter, Download,
-  Calendar, CreditCard, AlertCircle, BarChart2,
+  CreditCard, BarChart2, Plus, ChevronDown,
+  FileText, User, Calendar, Receipt, Banknote,
+  Globe, AlertCircle,
 } from "lucide-react";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 type PaymentStatus = "pending" | "completed" | "failed" | "refunded" | "cancelled";
+type PaymentSource = "online" | "manual";
 
-interface Payment {
-  id:            string;
-  clientId:      string;
-  clientName?:   string;
-  doctorId:      string;
-  appointmentId: string;
-  amount:        number;
-  currency:      string;
-  status:        PaymentStatus;
-  sessionType:   string;
-  sessionDate?:  string;
-  reference?:    string;
-  provider:      string;
-  createdAt:     any;
-  updatedAt:     any;
+interface Transaction {
+  id:          string;
+  source:      PaymentSource;
+  clientId:    string;
+  clientName:  string;
+  clientEmail: string;
+  amount:      number;
+  currency:    string;
+  status:      PaymentStatus;
+  sessionType: string;
+  method:      string;
+  reference:   string;
+  description: string;
+  date:        string;
+  createdAt:   any;
 }
 
 interface UserDoc { uid: string; displayName: string; email: string; role: string; }
 
-// ── Status config ──────────────────────────────────────────────────────────
-const STATUS_CONFIG: Record<PaymentStatus, { label:string; bg:string; color:string; Icon:any }> = {
-  completed: { label:"Paid",      bg:"rgba(78,205,196,0.12)",  color:"#2BA8A0", Icon:CheckCircle  },
-  pending:   { label:"Pending",   bg:"rgba(212,168,83,0.12)",  color:"#B8860B", Icon:Clock        },
-  failed:    { label:"Failed",    bg:"rgba(232,96,76,0.12)",   color:"#E8604C", Icon:XCircle      },
-  refunded:  { label:"Refunded",  bg:"rgba(138,155,168,0.12)", color:"#8A9BA8", Icon:ArrowUpRight },
-  cancelled: { label:"Cancelled", bg:"rgba(138,155,168,0.12)", color:"#8A9BA8", Icon:XCircle      },
+const PAYMENT_METHODS = ["Cash", "Bank Transfer", "Zelle", "PayPal", "Cheque", "Other"];
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+const STATUS_CONFIG: Record<PaymentStatus, { label: string; bg: string; color: string; Icon: any }> = {
+  completed: { label: "Paid",      bg: "rgba(78,205,196,0.12)",  color: "#2BA8A0", Icon: CheckCircle  },
+  pending:   { label: "Pending",   bg: "rgba(212,168,83,0.12)",  color: "#B8860B", Icon: Clock        },
+  failed:    { label: "Failed",    bg: "rgba(232,96,76,0.12)",   color: "#E8604C", Icon: XCircle      },
+  refunded:  { label: "Refunded",  bg: "rgba(138,155,168,0.12)", color: "#8A9BA8", Icon: ArrowUpRight },
+  cancelled: { label: "Cancelled", bg: "rgba(138,155,168,0.12)", color: "#8A9BA8", Icon: XCircle      },
 };
 
 function StatusBadge({ status }: { status: PaymentStatus }) {
@@ -54,57 +61,75 @@ function StatusBadge({ status }: { status: PaymentStatus }) {
   );
 }
 
-// ── Mini sparkline bar ─────────────────────────────────────────────────────
-function MonthlyBar({ label, value, max }: { label:string; value:number; max:number }) {
-  const pct = max > 0 ? (value / max) * 100 : 0;
+function SourceBadge({ source }: { source: PaymentSource }) {
   return (
-    <div className="flex flex-col items-center gap-1">
-      <div className="w-8 rounded-t-lg flex items-end justify-center"
-        style={{ height: "48px", background: "rgba(13,59,68,0.05)" }}>
-        <div className="w-full rounded-t-lg transition-all"
-          style={{ height: `${pct}%`, background: "linear-gradient(180deg, #4ECDC4, #0D3B44)", minHeight: pct > 0 ? "4px" : "0" }} />
-      </div>
-      <span className="text-xs" style={{ color: "#C4C4C4" }}>{label}</span>
-    </div>
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium"
+      style={{
+        background: source === "manual" ? "rgba(212,168,83,0.1)" : "rgba(13,59,68,0.06)",
+        color:      source === "manual" ? "#B8860B" : "#4A5568",
+      }}>
+      {source === "manual" ? <Banknote size={10} /> : <Globe size={10} />}
+      {source === "manual" ? "Manual" : "Online"}
+    </span>
   );
 }
 
-// ── Revenue chart strip ────────────────────────────────────────────────────
-function RevenueChart({ payments }: { payments: Payment[] }) {
-  const months = useMemo(() => {
-    const now    = new Date();
-    const result: { label:string; value:number }[] = [];
-    for (let i = 5; i >= 0; i--) {
-      const d   = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2,"0")}`;
-      const label = d.toLocaleDateString("en-US", { month: "short" });
-      const value = payments
-        .filter(p => {
-          if (p.status !== "completed" || !p.createdAt?.toDate) return false;
-          const pd = p.createdAt.toDate();
-          return `${pd.getFullYear()}-${String(pd.getMonth()+1).padStart(2,"0")}` === key;
-        })
-        .reduce((sum, p) => sum + p.amount, 0);
-      result.push({ label, value });
-    }
-    return result;
-  }, [payments]);
+function fmt(n: number) {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n);
+}
+function fmtFull(n: number) {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n);
+}
+function getDate(t: Transaction): Date | null {
+  if (t.createdAt?.toDate) return t.createdAt.toDate();
+  if (t.createdAt) return new Date(t.createdAt);
+  return null;
+}
 
-  const max = Math.max(...months.map(m => m.value), 1);
+// ── Monthly Chart ──────────────────────────────────────────────────────────
+function RevenueChart({ transactions }: { transactions: Transaction[] }) {
+  const months = useMemo(() => {
+    const now = new Date();
+    return Array.from({ length: 6 }, (_, i) => {
+      const d     = new Date(now.getFullYear(), now.getMonth() - (5 - i), 1);
+      const key   = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      const label = d.toLocaleDateString("en-US", { month: "short" });
+      const online = transactions
+        .filter(t => { if (t.status !== "completed" || t.source !== "online") return false; const td = getDate(t); return td && `${td.getFullYear()}-${String(td.getMonth()+1).padStart(2,"0")}` === key; })
+        .reduce((s, t) => s + t.amount, 0);
+      const manual = transactions
+        .filter(t => { if (t.status !== "completed" || t.source !== "manual") return false; const td = getDate(t); return td && `${td.getFullYear()}-${String(td.getMonth()+1).padStart(2,"0")}` === key; })
+        .reduce((s, t) => s + t.amount, 0);
+      return { label, online, manual, total: online + manual };
+    });
+  }, [transactions]);
+
+  const max = Math.max(...months.map(m => m.total), 1);
 
   return (
     <div className="rounded-2xl p-5" style={{ background: "white", boxShadow: "0 1px 4px rgba(13,59,68,0.07)" }}>
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-5">
         <div>
           <p className="text-sm font-semibold" style={{ color: "#0D3B44" }}>Monthly Revenue</p>
-          <p className="text-xs" style={{ color: "#8A9BA8" }}>Last 6 months — completed payments</p>
+          <p className="text-xs" style={{ color: "#8A9BA8" }}>Last 6 months — all completed payments</p>
         </div>
-        <BarChart2 size={18} style={{ color: "#8A9BA8" }} />
+        <div className="flex items-center gap-4 text-xs" style={{ color: "#8A9BA8" }}>
+          <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm" style={{ background: "#4ECDC4" }} /> Online</span>
+          <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm" style={{ background: "#D4A853" }} /> Manual</span>
+        </div>
       </div>
-      <div className="flex items-end gap-2 justify-between">
+      <div className="flex items-end gap-3 justify-between">
         {months.map(m => (
-          <div key={m.label} className="flex-1">
-            <MonthlyBar label={m.label} value={m.value} max={max} />
+          <div key={m.label} className="flex-1 flex flex-col items-center gap-1">
+            <p className="text-xs font-medium" style={{ color: "#8A9BA8" }}>{m.total > 0 ? fmt(m.total) : ""}</p>
+            <div className="w-full flex flex-col rounded-t-lg overflow-hidden"
+              style={{ height: "60px", background: "rgba(13,59,68,0.04)", justifyContent: "flex-end" }}>
+              <div style={{ height: `${(m.total / max) * 100}%`, minHeight: m.total > 0 ? "4px" : "0", display: "flex", flexDirection: "column", justifyContent: "flex-end" }}>
+                {m.manual > 0 && <div style={{ height: `${(m.manual / m.total) * 100}%`, background: "#D4A853", minHeight: "3px" }} />}
+                {m.online > 0 && <div style={{ height: `${(m.online / m.total) * 100}%`, background: "linear-gradient(180deg, #4ECDC4, #0D3B44)", minHeight: "3px" }} />}
+              </div>
+            </div>
+            <span className="text-xs" style={{ color: "#C4C4C4" }}>{m.label}</span>
           </div>
         ))}
       </div>
@@ -112,184 +137,338 @@ function RevenueChart({ payments }: { payments: Payment[] }) {
   );
 }
 
-// ── Export CSV helper ──────────────────────────────────────────────────────
-function exportCSV(payments: Payment[]) {
-  const headers = ["Date","Client","Session Type","Amount","Currency","Status","Reference","Provider"];
-  const rows    = payments.map(p => [
-    p.createdAt?.toDate ? p.createdAt.toDate().toLocaleDateString() : "",
-    p.clientName ?? p.clientId,
-    p.sessionType ?? "",
-    p.amount,
-    p.currency ?? "USD",
-    p.status,
-    p.reference ?? "",
-    p.provider ?? "WiPay",
-  ]);
+// ── Manual Payment Drawer ──────────────────────────────────────────────────
+function ManualPaymentDrawer({ clients, onClose, onSave }: {
+  clients: UserDoc[];
+  onClose: () => void;
+  onSave: (tx: Transaction) => void;
+}) {
+  const { user } = useAuth();
+  const [search,  setSearch]  = useState("");
+  const [saving,  setSaving]  = useState(false);
+  const [error,   setError]   = useState("");
+  const [form, setForm] = useState({
+    clientId: "", clientName: "", clientEmail: "",
+    amount: "", method: "Cash", description: "", reference: "",
+    date: new Date().toISOString().slice(0, 10), sessionType: "",
+  });
+
+  const filteredClients = clients.filter(c =>
+    c.displayName?.toLowerCase().includes(search.toLowerCase()) ||
+    c.email?.toLowerCase().includes(search.toLowerCase())
+  );
+
+  function selectClient(c: UserDoc) {
+    setForm(f => ({ ...f, clientId: c.uid, clientName: c.displayName, clientEmail: c.email }));
+    setSearch(c.displayName);
+  }
+
+  async function handleSave() {
+    setError("");
+    if (!form.clientId)       return setError("Please select a client.");
+    if (!form.amount || isNaN(Number(form.amount)) || Number(form.amount) <= 0) return setError("Enter a valid amount.");
+    if (!form.description.trim()) return setError("Description is required.");
+    setSaving(true);
+    try {
+      const payload = {
+        clientId: form.clientId, clientName: form.clientName, clientEmail: form.clientEmail,
+        amount: Number(form.amount), currency: "USD", method: form.method,
+        description: form.description.trim(), reference: form.reference.trim(),
+        date: form.date, sessionType: form.sessionType.trim() || form.description.trim(),
+        recordedBy: user?.displayName ?? "Admin", status: "completed",
+        source: "manual", type: "manual", createdAt: serverTimestamp(),
+      };
+      const docRef = await addDoc(collection(db, "manualPayments"), payload);
+      onSave({ id: docRef.id, ...payload, createdAt: new Date() } as unknown as Transaction);
+      onClose();
+    } catch { setError("Failed to save payment."); }
+    finally { setSaving(false); }
+  }
+
+  const inputCls = "w-full px-4 py-3 rounded-xl text-sm outline-none";
+  const inputStyle = { background: "#F8F9FA", border: "1px solid rgba(26,26,46,0.1)", color: "#1A1A2E" };
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
+      <div className="relative w-full max-w-md h-full flex flex-col"
+        style={{ background: "white", boxShadow: "-8px 0 32px rgba(0,0,0,0.15)" }}>
+        <div className="flex items-center justify-between px-6 py-5 border-b" style={{ borderColor: "rgba(26,26,46,0.08)" }}>
+          <div>
+            <h3 style={{ fontFamily: "var(--font-dm-serif)", fontSize: "20px", color: "#1A1A2E" }}>Record Manual Payment</h3>
+            <p className="text-xs mt-0.5" style={{ color: "#8A9BA8" }}>Log a cash or offline payment</p>
+          </div>
+          <button onClick={onClose} className="p-2 rounded-lg hover:bg-black/5"><X size={18} style={{ color: "#8A9BA8" }} /></button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-6 space-y-4">
+          {error && (
+            <div className="flex items-center gap-2 px-4 py-3 rounded-xl text-xs font-medium"
+              style={{ background: "rgba(232,96,76,0.08)", color: "#E8604C", border: "1px solid rgba(232,96,76,0.2)" }}>
+              <AlertCircle size={13} /> {error}
+            </div>
+          )}
+          {/* Client */}
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "#8A9BA8" }}>Client *</p>
+            <div className="relative">
+              <User size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 z-10" style={{ color: "#8A9BA8" }} />
+              <input type="text" value={search}
+                onChange={e => { setSearch(e.target.value); setForm(f => ({ ...f, clientId: "", clientName: "", clientEmail: "" })); }}
+                placeholder="Search by name or email..."
+                className={inputCls} style={{ ...inputStyle, paddingLeft: "40px" }} />
+              {search && !form.clientId && filteredClients.length > 0 && (
+                <div className="absolute top-full left-0 right-0 mt-1 rounded-xl overflow-hidden z-30 py-1"
+                  style={{ background: "white", boxShadow: "0 4px 20px rgba(26,26,46,0.15)", maxHeight: "180px", overflowY: "auto" }}>
+                  {filteredClients.map(c => (
+                    <button key={c.uid} onClick={() => selectClient(c)} className="w-full text-left px-4 py-3 hover:bg-black/5">
+                      <p className="text-sm font-medium" style={{ color: "#1A1A2E" }}>{c.displayName}</p>
+                      <p className="text-xs" style={{ color: "#8A9BA8" }}>{c.email}</p>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            {form.clientId && (
+              <div className="mt-2 flex items-center gap-2 px-3 py-2 rounded-lg"
+                style={{ background: "rgba(78,205,196,0.06)", border: "1px solid rgba(78,205,196,0.2)" }}>
+                <CheckCircle size={13} style={{ color: "#4ECDC4" }} />
+                <span className="text-xs font-medium" style={{ color: "#2BA8A0" }}>{form.clientName}</span>
+              </div>
+            )}
+          </div>
+          {/* Amount + Method */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "#8A9BA8" }}>Amount (USD) *</p>
+              <div className="relative">
+                <DollarSign size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2" style={{ color: "#8A9BA8" }} />
+                <input type="number" min="0" step="0.01" value={form.amount}
+                  onChange={e => setForm(f => ({ ...f, amount: e.target.value }))}
+                  placeholder="0.00" className={inputCls} style={{ ...inputStyle, paddingLeft: "40px" }} />
+              </div>
+            </div>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "#8A9BA8" }}>Method</p>
+              <div className="relative">
+                <select value={form.method} onChange={e => setForm(f => ({ ...f, method: e.target.value }))}
+                  className={inputCls} style={{ ...inputStyle, appearance: "none", paddingRight: "32px" }}>
+                  {PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}
+                </select>
+                <ChevronDown size={13} className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: "#8A9BA8" }} />
+              </div>
+            </div>
+          </div>
+          {/* Session Type */}
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "#8A9BA8" }}>Session Type</p>
+            <input type="text" value={form.sessionType} onChange={e => setForm(f => ({ ...f, sessionType: e.target.value }))}
+              placeholder="e.g. Individual Therapy" className={inputCls} style={inputStyle} />
+          </div>
+          {/* Description */}
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "#8A9BA8" }}>Description *</p>
+            <div className="relative">
+              <FileText size={15} className="absolute left-3.5 top-3.5" style={{ color: "#8A9BA8" }} />
+              <textarea value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+                rows={3} placeholder="e.g. Individual therapy session — March 8"
+                className={inputCls + " resize-none"} style={{ ...inputStyle, paddingLeft: "40px" }} />
+            </div>
+          </div>
+          {/* Reference + Date */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "#8A9BA8" }}>Reference #</p>
+              <input type="text" value={form.reference} onChange={e => setForm(f => ({ ...f, reference: e.target.value }))}
+                placeholder="INV-001" className={inputCls} style={inputStyle} />
+            </div>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "#8A9BA8" }}>Date</p>
+              <div className="relative">
+                <Calendar size={13} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "#8A9BA8" }} />
+                <input type="date" value={form.date} onChange={e => setForm(f => ({ ...f, date: e.target.value }))}
+                  className={inputCls} style={{ ...inputStyle, paddingLeft: "36px" }} />
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="px-6 py-4 border-t flex gap-3" style={{ borderColor: "rgba(26,26,46,0.08)" }}>
+          <button onClick={onClose} className="flex-1 py-3 rounded-xl text-sm font-semibold"
+            style={{ background: "rgba(26,26,46,0.05)", color: "#4A5568" }}>Cancel</button>
+          <button onClick={handleSave} disabled={saving}
+            className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold text-white"
+            style={{ background: "linear-gradient(135deg, #0D3B44, #1A535C)", opacity: saving ? 0.7 : 1 }}>
+            {saving ? <Loader2 size={15} className="animate-spin" /> : <CreditCard size={15} />}
+            {saving ? "Saving…" : "Record Payment"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── CSV Export ─────────────────────────────────────────────────────────────
+function exportCSV(transactions: Transaction[]) {
+  const headers = ["Date","Client","Email","Session Type","Description","Amount (USD)","Method","Source","Status","Reference"];
+  const rows = transactions.map(t => {
+    const d = getDate(t);
+    return [d ? d.toLocaleDateString() : t.date ?? "", t.clientName, t.clientEmail,
+      t.sessionType || "", t.description || "", t.amount.toFixed(2),
+      t.method || "", t.source, t.status, t.reference || ""];
+  });
   const csv = [headers, ...rows].map(r => r.map(String).map(v => `"${v.replace(/"/g,'""')}"`).join(",")).join("\n");
   const blob = new Blob([csv], { type: "text/csv" });
   const url  = URL.createObjectURL(blob);
-  const a    = document.createElement("a"); a.href = url;
-  a.download = `valeo-payments-${new Date().toISOString().split("T")[0]}.csv`;
-  a.click(); URL.revokeObjectURL(url);
+  const a    = document.createElement("a");
+  a.href = url;
+  a.download = `valeo-financials-${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
-// ── Main page ──────────────────────────────────────────────────────────────
-export default function AdminPaymentsPage() {
-  const [payments, setPayments] = useState<Payment[]>([]);
-  const [users,    setUsers]    = useState<Record<string, UserDoc>>({});
-  const [loading,  setLoading]  = useState(true);
-  const [search,   setSearch]   = useState("");
-  const [filter,   setFilter]   = useState<"all" | PaymentStatus>("all");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo,   setDateTo]   = useState("");
-  const [showFilters, setShowFilters] = useState(false);
+// ── Main Page ──────────────────────────────────────────────────────────────
+export default function AdminFinancialsPage() {
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [clients,      setClients]      = useState<UserDoc[]>([]);
+  const [users,        setUsers]        = useState<Record<string, UserDoc>>({});
+  const [loading,      setLoading]      = useState(true);
+  const [search,       setSearch]       = useState("");
+  const [filter,       setFilter]       = useState<"all" | PaymentStatus>("all");
+  const [sourceFilter, setSourceFilter] = useState<"all" | PaymentSource>("all");
+  const [dateFrom,     setDateFrom]     = useState("");
+  const [dateTo,       setDateTo]       = useState("");
+  const [showFilters,  setShowFilters]  = useState(false);
+  const [showDrawer,   setShowDrawer]   = useState(false);
 
   useEffect(() => {
     (async () => {
-      const [paySnap, userSnap] = await Promise.all([
-        getDocs(query(collection(db, "payments"), orderBy("createdAt", "desc"))),
-        getDocs(collection(db, "users")),
-      ]);
+      try {
+        const [paySnap, manualSnap, userSnap] = await Promise.all([
+          getDocs(query(collection(db, "payments"),       orderBy("createdAt", "desc"))),
+          getDocs(query(collection(db, "manualPayments"), orderBy("createdAt", "desc"))),
+          getDocs(collection(db, "users")),
+        ]);
 
-      const userMap: Record<string, UserDoc> = {};
-      userSnap.docs.forEach(d => { userMap[d.id] = { uid: d.id, ...d.data() } as UserDoc; });
-      setUsers(userMap);
+        const userMap: Record<string, UserDoc> = {};
+        userSnap.docs.forEach(d => { userMap[d.id] = { uid: d.id, ...d.data() } as UserDoc; });
+        setUsers(userMap);
+        setClients(userSnap.docs.map(d => ({ uid: d.id, ...d.data() } as UserDoc)).filter(u => u.role === "client"));
 
-      const loaded = paySnap.docs.map(d => {
-        const data = d.data() as any;
-        return {
-          id: d.id,
-          ...data,
-          clientName: userMap[data.clientId]?.displayName ?? "Unknown Client",
-        } as Payment;
-      });
-      setPayments(loaded);
-      setLoading(false);
+        const online: Transaction[] = paySnap.docs.map(d => {
+          const data = d.data() as any;
+          return {
+            id: d.id, source: "online" as PaymentSource,
+            clientId: data.clientId ?? "", clientName: userMap[data.clientId]?.displayName ?? data.clientName ?? "Unknown",
+            clientEmail: userMap[data.clientId]?.email ?? "", amount: data.amount ?? 0, currency: data.currency ?? "USD",
+            status: data.status ?? "pending", sessionType: data.sessionType ?? "", method: data.provider ?? "WiPay",
+            reference: data.reference ?? "", description: data.sessionType ?? "", date: data.sessionDate ?? "",
+            createdAt: data.createdAt,
+          };
+        });
+
+        const manual: Transaction[] = manualSnap.docs.map(d => {
+          const data = d.data() as any;
+          return {
+            id: d.id, source: "manual" as PaymentSource,
+            clientId: data.clientId ?? "", clientName: data.clientName ?? userMap[data.clientId]?.displayName ?? "Unknown",
+            clientEmail: data.clientEmail ?? userMap[data.clientId]?.email ?? "", amount: data.amount ?? 0, currency: data.currency ?? "USD",
+            status: (data.status ?? "completed") as PaymentStatus, sessionType: data.sessionType ?? data.description ?? "",
+            method: data.method ?? "Cash", reference: data.reference ?? "", description: data.description ?? "",
+            date: data.date ?? "", createdAt: data.createdAt,
+          };
+        });
+
+        const all = [...online, ...manual].sort((a, b) => {
+          const da = getDate(a)?.getTime() ?? 0;
+          const db2 = getDate(b)?.getTime() ?? 0;
+          return db2 - da;
+        });
+        setTransactions(all);
+      } finally { setLoading(false); }
     })();
   }, []);
 
-  // ── Metrics ──────────────────────────────────────────────────────────────
-  const revenue      = payments.filter(p => p.status === "completed").reduce((s, p) => s + p.amount, 0);
-  const refunded     = payments.filter(p => p.status === "refunded").reduce((s, p) => s + p.amount, 0);
-  const pendingTotal = payments.filter(p => p.status === "pending").reduce((s, p) => s + p.amount, 0);
-  const uniqueClients = new Set(payments.filter(p => p.status === "completed").map(p => p.clientId)).size;
+  const completed     = transactions.filter(t => t.status === "completed");
+  const revenue       = completed.reduce((s, t) => s + t.amount, 0);
+  const manualRev     = completed.filter(t => t.source === "manual").reduce((s, t) => s + t.amount, 0);
+  const onlineRev     = completed.filter(t => t.source === "online").reduce((s, t) => s + t.amount, 0);
+  const pending       = transactions.filter(t => t.status === "pending").reduce((s, t) => s + t.amount, 0);
 
   const now   = new Date();
-  const thisM = payments.filter(p => {
-    if (p.status !== "completed" || !p.createdAt?.toDate) return false;
-    const d = p.createdAt.toDate();
-    return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
-  }).reduce((s, p) => s + p.amount, 0);
+  const thisM = completed.filter(t => { const d = getDate(t); return d && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear(); }).reduce((s, t) => s + t.amount, 0);
+  const lastM = completed.filter(t => { const d = getDate(t); const lm = new Date(now.getFullYear(), now.getMonth()-1,1); return d && d.getMonth() === lm.getMonth() && d.getFullYear() === lm.getFullYear(); }).reduce((s, t) => s + t.amount, 0);
+  const growth = lastM > 0 ? Math.round(((thisM - lastM) / lastM) * 100) : null;
 
-  const lastM = payments.filter(p => {
-    if (p.status !== "completed" || !p.createdAt?.toDate) return false;
-    const d   = p.createdAt.toDate();
-    const lm  = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    return d.getMonth() === lm.getMonth() && d.getFullYear() === lm.getFullYear();
-  }).reduce((s, p) => s + p.amount, 0);
+  const filtered = useMemo(() => transactions.filter(t => {
+    const matchStatus = filter === "all" || t.status === filter;
+    const matchSource = sourceFilter === "all" || t.source === sourceFilter;
+    const matchSearch = !search || t.clientName.toLowerCase().includes(search.toLowerCase()) || t.sessionType.toLowerCase().includes(search.toLowerCase()) || t.description.toLowerCase().includes(search.toLowerCase()) || t.reference.toLowerCase().includes(search.toLowerCase());
+    const d = getDate(t);
+    const matchFrom = !dateFrom || (d && d >= new Date(dateFrom));
+    const matchTo   = !dateTo   || (d && d <= new Date(dateTo + "T23:59:59"));
+    return matchStatus && matchSource && matchSearch && matchFrom && matchTo;
+  }), [transactions, filter, sourceFilter, search, dateFrom, dateTo]);
 
-  const monthGrowth = lastM > 0 ? Math.round(((thisM - lastM) / lastM) * 100) : null;
-
-  const fmt = (n: number) => new Intl.NumberFormat("en-US", { style:"currency", currency:"USD", maximumFractionDigits:0 }).format(n);
-
-  // ── Filtering ─────────────────────────────────────────────────────────────
-  const filtered = useMemo(() => payments.filter(p => {
-    const matchStatus = filter === "all" || p.status === filter;
-    const matchSearch = !search ||
-      (p.clientName ?? "").toLowerCase().includes(search.toLowerCase()) ||
-      (p.sessionType ?? "").toLowerCase().includes(search.toLowerCase()) ||
-      (p.reference ?? "").toLowerCase().includes(search.toLowerCase());
-    const matchFrom = !dateFrom || (p.createdAt?.toDate && p.createdAt.toDate() >= new Date(dateFrom));
-    const matchTo   = !dateTo   || (p.createdAt?.toDate && p.createdAt.toDate() <= new Date(dateTo + "T23:59:59"));
-    return matchStatus && matchSearch && matchFrom && matchTo;
-  }), [payments, filter, search, dateFrom, dateTo]);
-
-  const filteredRevenue = filtered.filter(p => p.status === "completed").reduce((s, p) => s + p.amount, 0);
+  const filteredRevenue = filtered.filter(t => t.status === "completed").reduce((s, t) => s + t.amount, 0);
+  const hasFilters = filter !== "all" || sourceFilter !== "all" || !!search || !!dateFrom || !!dateTo;
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">
 
+      {showDrawer && (
+        <ManualPaymentDrawer clients={clients} onClose={() => setShowDrawer(false)}
+          onSave={tx => setTransactions(prev => [tx, ...prev])} />
+      )}
+
       {/* Header */}
-      <div className="flex items-start justify-between">
+      <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
-          <h2 className="text-2xl" style={{ fontFamily: "var(--font-dm-serif)", color: "#1A1A2E" }}>
-            Financials
-          </h2>
-          <p className="text-sm mt-0.5" style={{ color: "#8A9BA8" }}>
-            Platform revenue, transactions, and billing overview
-          </p>
+          <h2 className="text-2xl" style={{ fontFamily: "var(--font-dm-serif)", color: "#1A1A2E" }}>Financials</h2>
+          <p className="text-sm mt-0.5" style={{ color: "#8A9BA8" }}>Platform revenue, transactions, and billing overview</p>
         </div>
-        <button onClick={() => exportCSV(filtered)}
-          className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold border-2 hover:-translate-y-0.5 transition-all"
-          style={{ borderColor: "rgba(26,26,46,0.15)", color: "#1A1A2E" }}>
-          <Download size={14} /> Export CSV
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={() => exportCSV(filtered)}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold border hover:-translate-y-0.5 transition-all"
+            style={{ borderColor: "rgba(26,26,46,0.15)", color: "#1A1A2E", background: "white" }}>
+            <Download size={14} /> Export CSV
+          </button>
+          <button onClick={() => setShowDrawer(true)}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-white hover:-translate-y-0.5 transition-all"
+            style={{ background: "linear-gradient(135deg, #0D3B44, #1A535C)" }}>
+            <Plus size={14} /> Record Payment
+          </button>
+        </div>
       </div>
 
-      {/* KPI cards */}
+      {/* KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         {[
-          {
-            label:   "Total Revenue",
-            value:   fmt(revenue),
-            sub:     `${fmt(thisM)} this month`,
-            accent:  "#0D3B44",
-            Icon:    DollarSign,
-            trend:   monthGrowth,
-          },
-          {
-            label:   "Pending",
-            value:   fmt(pendingTotal),
-            sub:     `${payments.filter(p=>p.status==="pending").length} transactions`,
-            accent:  "#D4A853",
-            Icon:    Clock,
-            trend:   null,
-          },
-          {
-            label:   "Refunded",
-            value:   fmt(refunded),
-            sub:     `${payments.filter(p=>p.status==="refunded").length} transactions`,
-            accent:  "#8A9BA8",
-            Icon:    ArrowUpRight,
-            trend:   null,
-          },
-          {
-            label:   "Paying Clients",
-            value:   uniqueClients,
-            sub:     `${payments.filter(p=>p.status==="completed").length} paid sessions`,
-            accent:  "#4ECDC4",
-            Icon:    Users,
-            trend:   null,
-          },
+          { label: "Total Revenue",  value: fmt(revenue),   sub: `${fmt(thisM)} this month`, accent: "#0D3B44", Icon: DollarSign, trend: growth },
+          { label: "Pending",        value: fmt(pending),   sub: `${transactions.filter(t=>t.status==="pending").length} transactions`, accent: "#D4A853", Icon: Clock, trend: null },
+          { label: "Online Revenue", value: fmt(onlineRev), sub: `${completed.filter(t=>t.source==="online").length} transactions`, accent: "#4ECDC4", Icon: Globe,    trend: null },
+          { label: "Manual Revenue", value: fmt(manualRev), sub: `${completed.filter(t=>t.source==="manual").length} transactions`, accent: "#B8860B", Icon: Banknote, trend: null },
         ].map(({ label, value, sub, accent, Icon, trend }) => (
-          <div key={label} className="rounded-2xl p-5"
-            style={{ background: "white", boxShadow: "0 1px 4px rgba(26,26,46,0.07)" }}>
+          <div key={label} className="rounded-2xl p-5" style={{ background: "white", boxShadow: "0 1px 4px rgba(26,26,46,0.07)" }}>
             <div className="flex items-start justify-between mb-3">
-              <div className="w-9 h-9 rounded-xl flex items-center justify-center"
-                style={{ background: accent + "12" }}>
+              <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: accent + "12" }}>
                 <Icon size={16} style={{ color: accent }} />
               </div>
               {trend !== null && (
-                <span className="flex items-center gap-1 text-xs font-semibold"
-                  style={{ color: trend >= 0 ? "#2BA8A0" : "#E8604C" }}>
-                  {trend >= 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
-                  {Math.abs(trend)}%
+                <span className="flex items-center gap-1 text-xs font-semibold" style={{ color: trend >= 0 ? "#2BA8A0" : "#E8604C" }}>
+                  {trend >= 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />}{Math.abs(trend)}%
                 </span>
               )}
             </div>
-            <p className="text-2xl font-bold" style={{ fontFamily: "var(--font-dm-serif)", color: "#1A1A2E" }}>
-              {value}
-            </p>
+            <p className="text-2xl font-bold" style={{ fontFamily: "var(--font-dm-serif)", color: "#1A1A2E" }}>{value}</p>
             <p className="text-xs mt-0.5" style={{ color: "#8A9BA8" }}>{label}</p>
             <p className="text-xs mt-1" style={{ color: "#C4C4C4" }}>{sub}</p>
           </div>
         ))}
       </div>
 
-      {/* Revenue chart */}
-      <RevenueChart payments={payments} />
+      {/* Chart */}
+      <RevenueChart transactions={transactions} />
 
-      {/* Filters */}
+      {/* Search + Filters */}
       <div className="space-y-3">
         <div className="flex gap-3">
           <div className="relative flex-1">
@@ -302,54 +481,46 @@ export default function AdminPaymentsPage() {
           </div>
           <button onClick={() => setShowFilters(!showFilters)}
             className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold border-2 transition-all"
-            style={{
-              borderColor: showFilters ? "#1A1A2E" : "rgba(26,26,46,0.12)",
-              background:  showFilters ? "rgba(26,26,46,0.04)" : "white",
-              color: "#1A1A2E",
-            }}>
-            <Filter size={14} /> Filters
+            style={{ borderColor: showFilters ? "#1A1A2E" : "rgba(26,26,46,0.12)", background: showFilters ? "rgba(26,26,46,0.04)" : "white", color: "#1A1A2E" }}>
+            <Filter size={14} /> Filters {hasFilters && <span className="w-2 h-2 rounded-full" style={{ background: "#E8604C" }} />}
           </button>
         </div>
-
         {showFilters && (
-          <div className="flex flex-wrap gap-3 p-4 rounded-2xl"
-            style={{ background: "white", boxShadow: "0 1px 4px rgba(26,26,46,0.07)" }}>
+          <div className="flex flex-wrap gap-4 p-4 rounded-2xl" style={{ background: "white", boxShadow: "0 1px 4px rgba(26,26,46,0.07)" }}>
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider mb-1.5"
-                style={{ color: "#8A9BA8" }}>Status</label>
+              <p className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "#8A9BA8" }}>Status</p>
               <div className="flex gap-2 flex-wrap">
                 {(["all","completed","pending","failed","refunded"] as const).map(f => (
-                  <button key={f} onClick={() => setFilter(f)}
-                    className="px-3 py-1.5 rounded-lg text-xs font-semibold capitalize"
-                    style={{
-                      background: filter === f ? "#1A1A2E" : "rgba(26,26,46,0.04)",
-                      color:      filter === f ? "white"   : "#4A5568",
-                    }}>
-                    {f}
-                  </button>
+                  <button key={f} onClick={() => setFilter(f)} className="px-3 py-1.5 rounded-lg text-xs font-semibold capitalize"
+                    style={{ background: filter === f ? "#1A1A2E" : "rgba(26,26,46,0.04)", color: filter === f ? "white" : "#4A5568" }}>{f}</button>
                 ))}
               </div>
             </div>
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider mb-1.5"
-                style={{ color: "#8A9BA8" }}>Date From</label>
+              <p className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "#8A9BA8" }}>Source</p>
+              <div className="flex gap-2">
+                {(["all","online","manual"] as const).map(s => (
+                  <button key={s} onClick={() => setSourceFilter(s)} className="px-3 py-1.5 rounded-lg text-xs font-semibold capitalize"
+                    style={{ background: sourceFilter === s ? "#1A1A2E" : "rgba(26,26,46,0.04)", color: sourceFilter === s ? "white" : "#4A5568" }}>{s}</button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "#8A9BA8" }}>Date From</p>
               <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
                 className="px-3 py-1.5 rounded-lg text-xs border focus:outline-none"
                 style={{ borderColor: "rgba(26,26,46,0.12)", background: "#FAFAFA" }} />
             </div>
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider mb-1.5"
-                style={{ color: "#8A9BA8" }}>Date To</label>
+              <p className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "#8A9BA8" }}>Date To</p>
               <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
                 className="px-3 py-1.5 rounded-lg text-xs border focus:outline-none"
                 style={{ borderColor: "rgba(26,26,46,0.12)", background: "#FAFAFA" }} />
             </div>
-            {(search || filter !== "all" || dateFrom || dateTo) && (
+            {hasFilters && (
               <div className="flex items-end">
-                <button onClick={() => { setSearch(""); setFilter("all"); setDateFrom(""); setDateTo(""); }}
-                  className="text-xs font-semibold hover:underline" style={{ color: "#E8604C" }}>
-                  Clear all
-                </button>
+                <button onClick={() => { setSearch(""); setFilter("all"); setSourceFilter("all"); setDateFrom(""); setDateTo(""); }}
+                  className="text-xs font-semibold hover:underline" style={{ color: "#E8604C" }}>Clear all</button>
               </div>
             )}
           </div>
@@ -357,15 +528,12 @@ export default function AdminPaymentsPage() {
       </div>
 
       {/* Table */}
-      <div className="rounded-2xl overflow-hidden"
-        style={{ background: "white", boxShadow: "0 1px 4px rgba(26,26,46,0.07)" }}>
+      <div className="rounded-2xl overflow-hidden" style={{ background: "white", boxShadow: "0 1px 4px rgba(26,26,46,0.07)" }}>
         {loading ? (
-          <div className="flex items-center justify-center py-16">
-            <Loader2 size={28} className="animate-spin" style={{ color: "#4ECDC4" }} />
-          </div>
+          <div className="flex items-center justify-center py-16"><Loader2 size={28} className="animate-spin" style={{ color: "#4ECDC4" }} /></div>
         ) : filtered.length === 0 ? (
           <div className="py-16 text-center">
-            <CreditCard size={24} className="mx-auto mb-3" style={{ color: "#4ECDC4" }} />
+            <Receipt size={24} className="mx-auto mb-3" style={{ color: "#C4C4C4" }} />
             <p className="text-sm font-medium" style={{ color: "#1A1A2E" }}>No transactions found</p>
             <p className="text-xs mt-1" style={{ color: "#8A9BA8" }}>Try adjusting your filters.</p>
           </div>
@@ -376,85 +544,73 @@ export default function AdminPaymentsPage() {
                 <thead>
                   <tr style={{ borderBottom: "1px solid rgba(26,26,46,0.07)" }}>
                     {[
-                      { label: "Client",       cls: "" },
-                      { label: "Session",      cls: "hidden sm:table-cell" },
-                      { label: "Date",         cls: "hidden md:table-cell" },
-                      { label: "Amount",       cls: "" },
-                      { label: "Status",       cls: "" },
-                      { label: "Reference",    cls: "hidden lg:table-cell" },
-                    ].map(({ label, cls }) => (
-                      <th key={label}
-                        className={`text-left py-3 px-4 first:px-5 last:px-5 text-xs font-semibold uppercase tracking-wider ${cls}`}
-                        style={{ color: "#8A9BA8" }}>
-                        {label}
-                      </th>
+                      { label: "Client",   cls: "" },
+                      { label: "Session",  cls: "hidden sm:table-cell" },
+                      { label: "Date",     cls: "hidden md:table-cell" },
+                      { label: "Amount",   cls: "" },
+                      { label: "Method",   cls: "hidden sm:table-cell" },
+                      { label: "Status",   cls: "" },
+                      { label: "",         cls: "" },
+                    ].map(({ label, cls }, i) => (
+                      <th key={i} className={`text-left py-3 px-4 first:px-5 last:px-3 text-xs font-semibold uppercase tracking-wider ${cls}`}
+                        style={{ color: "#8A9BA8" }}>{label}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.map(p => (
-                    <tr key={p.id} className="border-b hover:bg-black/[0.015] transition-colors"
-                      style={{ borderColor: "rgba(26,26,46,0.05)" }}>
-                      {/* Client */}
-                      <td className="py-3.5 px-5">
-                        <div className="flex items-center gap-2.5">
-                          <div className="w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold flex-shrink-0"
-                            style={{ background: "rgba(13,59,68,0.07)", color: "#0D3B44" }}>
-                            {(p.clientName ?? "?")[0]?.toUpperCase()}
+                  {filtered.map(t => {
+                    const d = getDate(t);
+                    return (
+                      <tr key={t.id} className="border-b hover:bg-black/[0.015] transition-colors"
+                        style={{ borderColor: "rgba(26,26,46,0.05)" }}>
+                        <td className="py-3.5 px-5">
+                          <div className="flex items-center gap-2.5">
+                            <div className="w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold flex-shrink-0"
+                              style={{ background: "rgba(13,59,68,0.07)", color: "#0D3B44" }}>
+                              {(t.clientName ?? "?")[0]?.toUpperCase()}
+                            </div>
+                            <div>
+                              <p className="text-sm font-medium" style={{ color: "#1A1A2E" }}>{t.clientName}</p>
+                              <p className="text-xs" style={{ color: "#C4C4C4" }}>{t.clientEmail}</p>
+                            </div>
                           </div>
-                          <div>
-                            <p className="text-sm font-medium" style={{ color: "#1A1A2E" }}>{p.clientName ?? "—"}</p>
-                            <p className="text-xs" style={{ color: "#C4C4C4" }}>
-                              {users[p.clientId]?.email ?? ""}
-                            </p>
+                        </td>
+                        <td className="py-3.5 px-4 hidden sm:table-cell">
+                          <p className="text-sm" style={{ color: "#4A5568" }}>{t.sessionType || t.description || "—"}</p>
+                          {t.reference && <p className="text-xs font-mono mt-0.5" style={{ color: "#C4C4C4" }}>#{t.reference}</p>}
+                        </td>
+                        <td className="py-3.5 px-4 hidden md:table-cell">
+                          <p className="text-sm" style={{ color: "#4A5568" }}>
+                            {d ? d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : t.date || "—"}
+                          </p>
+                        </td>
+                        <td className="py-3.5 px-4">
+                          <p className="text-sm font-semibold"
+                            style={{ color: t.status === "refunded" ? "#8A9BA8" : "#1A1A2E", textDecoration: t.status === "refunded" ? "line-through" : "none" }}>
+                            {fmtFull(t.amount)}
+                          </p>
+                        </td>
+                        <td className="py-3.5 px-4 hidden sm:table-cell">
+                          <div className="space-y-1">
+                            <p className="text-xs" style={{ color: "#4A5568" }}>{t.method || "—"}</p>
+                            <SourceBadge source={t.source} />
                           </div>
-                        </div>
-                      </td>
-                      {/* Session */}
-                      <td className="py-3.5 px-4 hidden sm:table-cell">
-                        <p className="text-sm" style={{ color: "#4A5568" }}>{p.sessionType || "—"}</p>
-                      </td>
-                      {/* Date */}
-                      <td className="py-3.5 px-4 hidden md:table-cell">
-                        <p className="text-sm" style={{ color: "#4A5568" }}>
-                          {p.createdAt?.toDate
-                            ? p.createdAt.toDate().toLocaleDateString("en-US", { month:"short", day:"numeric", year:"numeric" })
-                            : "—"}
-                        </p>
-                      </td>
-                      {/* Amount */}
-                      <td className="py-3.5 px-4">
-                        <p className="text-sm font-semibold"
-                          style={{ color: p.status === "refunded" ? "#8A9BA8" : "#1A1A2E",
-                            textDecoration: p.status === "refunded" ? "line-through" : "none" }}>
-                          {new Intl.NumberFormat("en-US",{style:"currency",currency:p.currency||"TTD"}).format(p.amount)}
-                        </p>
-                      </td>
-                      {/* Status */}
-                      <td className="py-3.5 px-4">
-                        <StatusBadge status={p.status} />
-                      </td>
-                      {/* Reference */}
-                      <td className="py-3.5 px-5 hidden lg:table-cell">
-                        <p className="text-xs font-mono" style={{ color: "#C4C4C4" }}>
-                          {p.reference ? `#${p.reference.slice(-10).toUpperCase()}` : "—"}
-                        </p>
-                      </td>
-                    </tr>
-                  ))}
+                        </td>
+                        <td className="py-3.5 px-4"><StatusBadge status={t.status} /></td>
+                        <td className="py-3.5 px-3" />
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
-
-            {/* Table footer */}
             <div className="px-5 py-3.5 border-t flex items-center justify-between flex-wrap gap-2"
               style={{ borderColor: "rgba(26,26,46,0.06)" }}>
               <p className="text-xs" style={{ color: "#8A9BA8" }}>
-                {filtered.length} transaction{filtered.length !== 1 ? "s" : ""} · {filter !== "all" || dateFrom || dateTo ? "filtered" : "all time"}
+                {filtered.length} transaction{filtered.length !== 1 ? "s" : ""} {hasFilters ? "· filtered" : "· all time"}
               </p>
               <p className="text-sm font-semibold" style={{ color: "#1A1A2E" }}>
-                Filtered revenue:{" "}
-                <span style={{ color: "#2BA8A0" }}>{fmt(filteredRevenue)}</span>
+                Filtered revenue: <span style={{ color: "#2BA8A0" }}>{fmt(filteredRevenue)}</span>
               </p>
             </div>
           </>

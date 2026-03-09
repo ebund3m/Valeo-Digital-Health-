@@ -28,7 +28,6 @@ const navItems = [
   { href: "/admin",             label: "Overview",    icon: LayoutDashboard },
   { href: "/admin/users",       label: "Users",       icon: Users },
   { href: "/admin/assignments",  label: "Assignments", icon: UserCheck },
-  { href: "/admin/payments/manual", label: "Manual Payment", icon: CreditCard },
   { href: "/admin/financials",  label: "Financials",  icon: DollarSign },
   { href: "/admin/analytics",   label: "Analytics",   icon: BarChart2 },
   { href: "/admin/settings",    label: "Settings",    icon: Settings },
