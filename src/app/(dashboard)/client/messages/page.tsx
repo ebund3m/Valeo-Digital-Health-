@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useAuth } from "@/context/AuthContext";
 import {
   useConversations, useMessages,
@@ -8,18 +8,26 @@ import {
 } from "@/lib/useMessages";
 import {
   MessageCircle, Send, Loader2, Lock,
-  CheckCheck, Clock, ChevronLeft,
+  CheckCheck, ChevronLeft, AlertCircle,
 } from "lucide-react";
 import { collection, query, where, getDocs } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+// FIX 1: Unified timestamp helper — handles Firestore Timestamp AND ISO strings
+function toDate(ts: any): Date | null {
+  if (!ts) return null;
+  if (ts.toDate) return ts.toDate();
+  if (typeof ts === "string") return new Date(ts);
+  if (ts instanceof Date) return ts;
+  return null;
+}
+
 function timeLabel(ts: any): string {
-  if (!ts?.toDate) return "";
-  const d   = ts.toDate() as Date;
-  const now = new Date();
-  const diffMs  = now.getTime() - d.getTime();
-  const diffMin = Math.floor(diffMs / 60000);
+  const d = toDate(ts);
+  if (!d) return "";
+  const diffMin = Math.floor((Date.now() - d.getTime()) / 60000);
   if (diffMin < 1)  return "Just now";
   if (diffMin < 60) return `${diffMin}m ago`;
   const diffHr = Math.floor(diffMin / 60);
@@ -28,8 +36,15 @@ function timeLabel(ts: any): string {
 }
 
 function fullTime(ts: any): string {
-  if (!ts?.toDate) return "";
-  return ts.toDate().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  const d = toDate(ts);
+  if (!d) return "";
+  return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+}
+
+function sameDay(a: any, b: any): boolean {
+  const da = toDate(a), db_ = toDate(b);
+  if (!da || !db_) return false;
+  return da.toDateString() === db_.toDateString();
 }
 
 // ── Message bubble ─────────────────────────────────────────────────────────
@@ -37,19 +52,29 @@ function Bubble({ msg, isOwn }: { msg: any; isOwn: boolean }) {
   return (
     <div className={`flex ${isOwn ? "justify-end" : "justify-start"} mb-2`}>
       <div className="max-w-[72%]">
-        <div className="px-4 py-2.5 rounded-2xl text-sm leading-relaxed"
+        <div
+          className="px-4 py-2.5 rounded-2xl text-sm leading-relaxed"
           style={{
             background:   isOwn ? "linear-gradient(135deg, #0D3B44, #1A535C)" : "white",
             color:        isOwn ? "white" : "#22272B",
             borderRadius: isOwn ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
             boxShadow:    isOwn ? "none" : "0 1px 3px rgba(13,59,68,0.08)",
-          }}>
+          }}
+        >
           {msg.text}
         </div>
-        <p className={`text-xs mt-1 ${isOwn ? "text-right" : "text-left"}`}
-          style={{ color: "#C4C4C4" }}>
+        <p
+          className={`text-xs mt-1 ${isOwn ? "text-right" : "text-left"}`}
+          style={{ color: "#C4C4C4" }}
+        >
           {fullTime(msg.createdAt)}
-          {isOwn && <CheckCheck size={11} className="inline ml-1" style={{ color: "#4ECDC4" }} />}
+          {isOwn && (
+            <CheckCheck
+              size={11}
+              className="inline ml-1"
+              style={{ color: msg._optimistic ? "#C4C4C4" : "#4ECDC4" }} // S1: dim while pending
+            />
+          )}
         </p>
       </div>
     </div>
@@ -62,98 +87,174 @@ export default function ClientMessagesPage() {
 
   const { conversations, loading: convLoading } = useConversations(user?.uid ?? "", "client");
 
-  const [activeId,    setActiveId]    = useState<string | null>(null);
-  const [text,        setText]        = useState("");
-  const [sending,     setSending]     = useState(false);
-  const [mobileView,  setMobileView]  = useState<"list" | "chat">("list");
-  const [doctorName,  setDoctorName]  = useState("");
-  const [startingNew, setStartingNew] = useState(false);
+  const [activeId,     setActiveId]    = useState<string | null>(null);
+  const [text,         setText]        = useState("");
+  const [sending,      setSending]     = useState(false);
+  const [sendError,    setSendError]   = useState<string | null>(null);  // FIX 10
+  const [mobileView,   setMobileView]  = useState<"list" | "chat">("list");
+  const [doctorName,   setDoctorName]  = useState("");
+  const [startingNew,  setStartingNew] = useState(false);
+  const [startError,   setStartError]  = useState<string | null>(null);  // FIX 5
+
+  // S1: optimistic local messages appended before Firestore confirms
+  const [optimistic, setOptimistic] = useState<any[]>([]);
 
   const { messages, loading: msgLoading } = useMessages(activeId);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const bottomRef  = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null); // FIX 9: ref for resize
+
+  // Merge live messages with optimistic ones, de-duping by id
+  const allMessages = [
+    ...messages,
+    ...optimistic.filter(o => !messages.find(m => m.id === o.id)),
+  ];
 
   // Auto-scroll on new messages
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [allMessages.length]);
 
-  // Mark as read when opening conversation
+  // FIX 2: markRead only when activeId changes (not on every new message)
   useEffect(() => {
     if (activeId) markRead(activeId, "client");
-  }, [activeId, messages.length]);
+  }, [activeId]);
 
-  // Auto-open first conversation
+  // FIX 3: Auto-open first conversation — include activeId in dep array
   useEffect(() => {
     if (!activeId && conversations.length > 0) {
       setActiveId(conversations[0].id);
-      setDoctorName(conversations[0].doctorName);
+      setDoctorName(conversations[0].doctorName ?? "Dr. Miller");
     }
-  }, [conversations]);
+  }, [conversations, activeId]);
 
-  // If no conversation exists, find the doctor and create one
+  // FIX 5: Full try/catch — spinner always stops, error shown to user
   async function startConversation() {
     if (!user) return;
     setStartingNew(true);
+    setStartError(null);
     try {
-      // Load the doctor from users collection
       const snap = await getDocs(
         query(collection(db, "users"), where("role", "==", "doctor"))
       );
-      if (snap.empty) return;
+      if (snap.empty) {
+        setStartError("No therapist found. Please contact support.");
+        return;
+      }
       const doctorDoc  = snap.docs[0];
       const doctorData = doctorDoc.data() as any;
       const convId = await getOrCreateConversation(
-        user.uid, user.displayName ?? "Client",
-        doctorDoc.id, doctorData.displayName ?? "Dr. Miller",
+        user.uid,
+        user.displayName ?? "Client",
+        doctorDoc.id,
+        doctorData.displayName ?? "Dr. Miller",
       );
       setActiveId(convId);
       setDoctorName(doctorData.displayName ?? "Dr. Miller");
       setMobileView("chat");
+    } catch (err) {
+      console.error("[Messages] startConversation:", err);
+      setStartError("Failed to start conversation. Please try again.");
     } finally {
-      setStartingNew(false);
+      setStartingNew(false); // always clears spinner
     }
   }
 
+  // FIX 4: Removed dead `conv` variable
+  // FIX 10: Catch send errors and show them inline
+  // S1: Optimistic append
+  // S4: Reset textarea height after sending
   async function handleSend() {
     if (!text.trim() || !activeId || !user) return;
+    const content = text.trim();
+    setSendError(null);
+    setText("");
+
+    // S1: Append optimistic bubble immediately
+    const tempId = `opt-${Date.now()}`;
+    const optimisticMsg = {
+      id: tempId,
+      text: content,
+      senderId: user.uid,
+      createdAt: new Date(),
+      _optimistic: true,
+    };
+    setOptimistic(prev => [...prev, optimisticMsg]);
+
+    // S4: Reset textarea height
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
+    }
+
     setSending(true);
     try {
-      const conv = conversations.find(c => c.id === activeId);
-      await sendMessage(activeId, user.uid, user.displayName ?? "Client", "client", text);
-      setText("");
+      await sendMessage(activeId, user.uid, user.displayName ?? "Client", "client", content);
+      // Remove optimistic message — the real one will arrive via onSnapshot
+      setOptimistic(prev => prev.filter(m => m.id !== tempId));
+    } catch (err) {
+      console.error("[Messages] sendMessage:", err);
+      // Remove optimistic bubble and show error
+      setOptimistic(prev => prev.filter(m => m.id !== tempId));
+      setSendError("Failed to send message. Please try again.");
+      setText(content); // restore text so user doesn't lose it
     } finally {
       setSending(false);
     }
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  }
+
+  // FIX 9: Resize via ref, not e.target cast
+  function handleTextareaInput() {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
   }
 
   function openConv(id: string, dName: string) {
-    setActiveId(id); setDoctorName(dName); setMobileView("chat");
+    setActiveId(id);
+    setDoctorName(dName);
+    setMobileView("chat");
+    setSendError(null);
+    setOptimistic([]);
   }
 
   const activeConv = conversations.find(c => c.id === activeId);
 
   return (
     <div className="max-w-5xl mx-auto">
-      <div className="rounded-3xl overflow-hidden flex"
-        style={{ height: "calc(100vh - 160px)", minHeight: "520px",
-          background: "white", boxShadow: "0 2px 12px rgba(13,59,68,0.08)" }}>
+      <div
+        className="rounded-3xl overflow-hidden flex"
+        style={{
+          height: "calc(100vh - 160px)",
+          minHeight: "520px",
+          background: "white",
+          boxShadow: "0 2px 12px rgba(13,59,68,0.08)",
+        }}
+      >
 
-        {/* ── Sidebar ── */}
-        <div className={`flex-shrink-0 border-r flex flex-col
-          ${mobileView === "chat" ? "hidden md:flex" : "flex"} w-full md:w-72`}
-          style={{ borderColor: "rgba(13,59,68,0.08)" }}>
-
+        {/* ── Sidebar ─────────────────────────────────────────────────────── */}
+        <div
+          className={`flex-shrink-0 border-r flex flex-col
+            ${mobileView === "chat" ? "hidden md:flex" : "flex"} w-full md:w-72`}
+          style={{ borderColor: "rgba(13,59,68,0.08)" }}
+        >
           {/* Sidebar header */}
           <div className="p-5 border-b" style={{ borderColor: "rgba(13,59,68,0.08)" }}>
-            <h2 className="text-lg font-semibold" style={{ fontFamily: "var(--font-dm-serif)", color: "#0D3B44" }}>
+            <h2
+              className="text-lg font-semibold"
+              style={{ fontFamily: "var(--font-dm-serif)", color: "#0D3B44" }}
+            >
               Messages
             </h2>
+            {/* FIX 7: Dynamic label instead of hardcoded "Dr. Miller" */}
             <p className="text-xs mt-0.5" style={{ color: "#8A9BA8" }}>
-              Secure conversations with Dr. Miller
+              Secure conversations with your therapist
             </p>
           </div>
 
@@ -165,41 +266,67 @@ export default function ClientMessagesPage() {
               </div>
             ) : conversations.length === 0 ? (
               <div className="p-5 text-center">
-                <div className="w-12 h-12 rounded-2xl flex items-center justify-center mx-auto mb-3"
-                  style={{ background: "rgba(78,205,196,0.08)" }}>
+                <div
+                  className="w-12 h-12 rounded-2xl flex items-center justify-center mx-auto mb-3"
+                  style={{ background: "rgba(78,205,196,0.08)" }}
+                >
                   <MessageCircle size={20} style={{ color: "#4ECDC4" }} />
                 </div>
-                <p className="text-sm font-medium mb-1" style={{ color: "#0D3B44" }}>No messages yet</p>
-                <p className="text-xs mb-4" style={{ color: "#8A9BA8" }}>Start a conversation with your doctor.</p>
-                <button onClick={startConversation} disabled={startingNew}
+                <p className="text-sm font-medium mb-1" style={{ color: "#0D3B44" }}>
+                  No messages yet
+                </p>
+                <p className="text-xs mb-4" style={{ color: "#8A9BA8" }}>
+                  Start a conversation with your therapist.
+                </p>
+                {/* FIX 5: Show error if startConversation fails */}
+                {startError && (
+                  <p className="text-xs mb-3 flex items-center justify-center gap-1"
+                    style={{ color: "#E8604C" }}>
+                    <AlertCircle size={12} />{startError}
+                  </p>
+                )}
+                <button
+                  onClick={startConversation}
+                  disabled={startingNew}
                   className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white disabled:opacity-60"
-                  style={{ background: "linear-gradient(135deg, #0D3B44, #1A535C)" }}>
-                  {startingNew ? <Loader2 size={13} className="animate-spin" /> : <MessageCircle size={13} />}
-                  Message Dr. Miller
+                  style={{ background: "linear-gradient(135deg, #0D3B44, #1A535C)" }}
+                >
+                  {startingNew
+                    ? <Loader2 size={13} className="animate-spin" />
+                    : <MessageCircle size={13} />}
+                  Message Therapist
                 </button>
               </div>
             ) : (
               conversations.map(conv => {
-                const isActive  = conv.id === activeId;
-                const unread    = conv.unreadClient ?? 0;
+                const isActive = conv.id === activeId;
+                // FIX 11: Cap unread badge at 9+
+                const unread = conv.unreadClient ?? 0;
+                const unreadLabel = unread > 9 ? "9+" : unread > 0 ? String(unread) : null;
                 return (
-                  <button key={conv.id} onClick={() => openConv(conv.id, conv.doctorName)}
+                  <button
+                    key={conv.id}
+                    onClick={() => openConv(conv.id, conv.doctorName ?? "Dr. Miller")}
                     className="w-full text-left px-5 py-4 border-b transition-colors hover:bg-black/[0.02]"
                     style={{
                       borderColor: "rgba(13,59,68,0.05)",
-                      background: isActive ? "rgba(13,59,68,0.04)" : "transparent",
-                    }}>
+                      background:  isActive ? "rgba(13,59,68,0.04)" : "transparent",
+                    }}
+                  >
                     <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-xl flex items-center justify-center text-sm font-bold flex-shrink-0"
-                        style={{ background: "linear-gradient(135deg, #0D3B44, #1A535C)", color: "white" }}>
+                      <div
+                        className="w-10 h-10 rounded-xl flex items-center justify-center text-sm font-bold flex-shrink-0"
+                        style={{ background: "linear-gradient(135deg, #0D3B44, #1A535C)", color: "white" }}
+                      >
                         {conv.doctorName?.[0]?.toUpperCase() ?? "D"}
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between">
                           <p className="text-sm font-semibold truncate" style={{ color: "#0D3B44" }}>
-                            {conv.doctorName}
+                            {conv.doctorName ?? "Your Therapist"}
                           </p>
                           <span className="text-xs flex-shrink-0 ml-1" style={{ color: "#C4C4C4" }}>
+                            {/* FIX 1: timeLabel now handles ISO strings too */}
                             {timeLabel(conv.lastMessageAt)}
                           </span>
                         </div>
@@ -207,10 +334,13 @@ export default function ClientMessagesPage() {
                           <p className="text-xs truncate" style={{ color: "#8A9BA8" }}>
                             {conv.lastMessage || "Start a conversation"}
                           </p>
-                          {unread > 0 && (
-                            <span className="w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 ml-1 text-white"
-                              style={{ background: "#4ECDC4" }}>
-                              {unread}
+                          {/* FIX 11: Capped badge */}
+                          {unreadLabel && (
+                            <span
+                              className="min-w-[20px] h-5 px-1 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 ml-1 text-white"
+                              style={{ background: "#4ECDC4" }}
+                            >
+                              {unreadLabel}
                             </span>
                           )}
                         </div>
@@ -230,43 +360,58 @@ export default function ClientMessagesPage() {
           </div>
         </div>
 
-        {/* ── Chat panel ── */}
-        <div className={`flex-1 flex flex-col min-w-0
-          ${mobileView === "list" ? "hidden md:flex" : "flex"}`}>
-
+        {/* ── Chat panel ──────────────────────────────────────────────────── */}
+        <div
+          className={`flex-1 flex flex-col min-w-0
+            ${mobileView === "list" ? "hidden md:flex" : "flex"}`}
+        >
           {activeId && activeConv ? (
             <>
               {/* Chat header */}
-              <div className="flex items-center gap-3 px-5 py-4 border-b flex-shrink-0"
-                style={{ borderColor: "rgba(13,59,68,0.08)" }}>
+              <div
+                className="flex items-center gap-3 px-5 py-4 border-b flex-shrink-0"
+                style={{ borderColor: "rgba(13,59,68,0.08)" }}
+              >
                 {/* Mobile back */}
-                <button onClick={() => setMobileView("list")}
-                  className="md:hidden p-1 rounded-lg hover:bg-black/5">
+                <button
+                  onClick={() => setMobileView("list")}
+                  className="md:hidden p-1 rounded-lg hover:bg-black/5"
+                >
                   <ChevronLeft size={18} style={{ color: "#4A5568" }} />
                 </button>
-                <div className="w-9 h-9 rounded-xl flex items-center justify-center text-sm font-bold flex-shrink-0"
-                  style={{ background: "linear-gradient(135deg, #0D3B44, #1A535C)", color: "white" }}>
+                <div
+                  className="w-9 h-9 rounded-xl flex items-center justify-center text-sm font-bold flex-shrink-0"
+                  style={{ background: "linear-gradient(135deg, #0D3B44, #1A535C)", color: "white" }}
+                >
                   {doctorName?.[0]?.toUpperCase() ?? "D"}
                 </div>
                 <div>
-                  <p className="text-sm font-semibold" style={{ color: "#0D3B44" }}>{doctorName}</p>
+                  <p className="text-sm font-semibold" style={{ color: "#0D3B44" }}>
+                    {doctorName || "Your Therapist"}
+                  </p>
+                  {/* FIX 8: Show generic "Therapist" instead of hardcoded specialty */}
                   <p className="text-xs flex items-center gap-1" style={{ color: "#4ECDC4" }}>
-                    <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ background: "#4ECDC4" }} />
-                    Health Psychologist
+                    <span
+                      className="w-1.5 h-1.5 rounded-full inline-block"
+                      style={{ background: "#4ECDC4" }}
+                    />
+                    {activeConv.doctorSpecialization ?? "Therapist"}
                   </p>
                 </div>
               </div>
 
-              {/* Messages */}
+              {/* Messages area */}
               <div className="flex-1 overflow-y-auto px-5 py-4">
                 {msgLoading ? (
                   <div className="flex items-center justify-center h-full">
                     <Loader2 size={24} className="animate-spin" style={{ color: "#4ECDC4" }} />
                   </div>
-                ) : messages.length === 0 ? (
+                ) : allMessages.length === 0 ? (
                   <div className="flex flex-col items-center justify-center h-full text-center px-6">
-                    <div className="w-12 h-12 rounded-2xl flex items-center justify-center mb-3"
-                      style={{ background: "rgba(78,205,196,0.08)" }}>
+                    <div
+                      className="w-12 h-12 rounded-2xl flex items-center justify-center mb-3"
+                      style={{ background: "rgba(78,205,196,0.08)" }}
+                    >
                       <MessageCircle size={20} style={{ color: "#4ECDC4" }} />
                     </div>
                     <p className="text-sm font-medium mb-1" style={{ color: "#0D3B44" }}>
@@ -278,20 +423,25 @@ export default function ClientMessagesPage() {
                   </div>
                 ) : (
                   <>
-                    {messages.map((msg, i) => {
+                    {allMessages.map((msg, i) => {
                       const isOwn = msg.senderId === user?.uid;
-                      // Date divider
-                      const showDate = i === 0 || (
-                        msg.createdAt?.toDate && messages[i-1].createdAt?.toDate &&
-                        msg.createdAt.toDate().toDateString() !== messages[i-1].createdAt.toDate().toDateString()
-                      );
+
+                      // FIX 6: Safe date comparison using toDate() helper
+                      const showDate =
+                        i === 0 ||
+                        !sameDay(allMessages[i - 1].createdAt, msg.createdAt);
+
+                      const dateLabel = toDate(msg.createdAt)?.toLocaleDateString("en-US", {
+                        weekday: "short", month: "short", day: "numeric",
+                      }) ?? "";
+
                       return (
                         <div key={msg.id}>
-                          {showDate && msg.createdAt?.toDate && (
+                          {showDate && dateLabel && (
                             <div className="flex items-center gap-3 my-4">
                               <div className="flex-1 h-px" style={{ background: "rgba(13,59,68,0.08)" }} />
                               <span className="text-xs px-3" style={{ color: "#C4C4C4" }}>
-                                {msg.createdAt.toDate().toLocaleDateString("en-US", { weekday:"short", month:"short", day:"numeric" })}
+                                {dateLabel}
                               </span>
                               <div className="flex-1 h-px" style={{ background: "rgba(13,59,68,0.08)" }} />
                             </div>
@@ -305,32 +455,51 @@ export default function ClientMessagesPage() {
                 )}
               </div>
 
-              {/* Input */}
-              <div className="px-5 py-4 border-t flex-shrink-0"
-                style={{ borderColor: "rgba(13,59,68,0.08)" }}>
+              {/* Input area */}
+              <div
+                className="px-5 py-4 border-t flex-shrink-0"
+                style={{ borderColor: "rgba(13,59,68,0.08)" }}
+              >
+                {/* FIX 10: Send error banner */}
+                {sendError && (
+                  <div
+                    className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs mb-3"
+                    style={{ background: "rgba(232,96,76,0.08)", color: "#E8604C" }}
+                  >
+                    <AlertCircle size={13} />
+                    {sendError}
+                    <button
+                      onClick={() => setSendError(null)}
+                      className="ml-auto text-xs underline"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                )}
+
                 <div className="flex items-end gap-3">
+                  {/* FIX 9: Use ref for resize instead of e.target cast */}
                   <textarea
+                    ref={textareaRef}
                     value={text}
                     onChange={e => setText(e.target.value)}
                     onKeyDown={handleKeyDown}
-                    placeholder="Type a message... (Enter to send)"
+                    onInput={handleTextareaInput}
+                    placeholder="Type a message… (Enter to send, Shift+Enter for new line)"
                     rows={1}
                     className="flex-1 px-4 py-3 rounded-2xl text-sm border resize-none focus:outline-none leading-relaxed"
                     style={{
                       borderColor: "rgba(13,59,68,0.15)",
-                      background: "rgba(13,59,68,0.02)",
-                      maxHeight: "120px",
-                    }}
-                    onInput={e => {
-                      const t = e.target as HTMLTextAreaElement;
-                      t.style.height = "auto";
-                      t.style.height = `${Math.min(t.scrollHeight, 120)}px`;
+                      background:  "rgba(13,59,68,0.02)",
+                      maxHeight:   "120px",
                     }}
                   />
-                  <button onClick={handleSend}
+                  <button
+                    onClick={handleSend}
                     disabled={!text.trim() || sending}
                     className="w-11 h-11 rounded-2xl flex items-center justify-center flex-shrink-0 disabled:opacity-40 transition-all hover:-translate-y-0.5"
-                    style={{ background: "linear-gradient(135deg, #0D3B44, #1A535C)" }}>
+                    style={{ background: "linear-gradient(135deg, #0D3B44, #1A535C)" }}
+                  >
                     {sending
                       ? <Loader2 size={16} className="animate-spin text-white" />
                       : <Send size={16} className="text-white" />}
@@ -342,18 +511,43 @@ export default function ClientMessagesPage() {
               </div>
             </>
           ) : (
-            /* No conversation selected */
+            /* No conversation selected — S3: CTA in the chat panel too */
             <div className="flex-1 flex flex-col items-center justify-center text-center px-8">
-              <div className="w-16 h-16 rounded-3xl flex items-center justify-center mb-4"
-                style={{ background: "rgba(13,59,68,0.05)" }}>
+              <div
+                className="w-16 h-16 rounded-3xl flex items-center justify-center mb-4"
+                style={{ background: "rgba(13,59,68,0.05)" }}
+              >
                 <MessageCircle size={28} style={{ color: "#8A9BA8" }} />
               </div>
               <p className="text-base font-semibold mb-1" style={{ color: "#0D3B44" }}>
                 Your messages
               </p>
-              <p className="text-sm" style={{ color: "#8A9BA8" }}>
-                Select a conversation or start a new one.
+              <p className="text-sm mb-5" style={{ color: "#8A9BA8" }}>
+                {conversations.length > 0
+                  ? "Select a conversation to continue."
+                  : "Send your therapist a message between sessions."}
               </p>
+              {/* S3: CTA when no conversations exist, shown in the chat panel */}
+              {conversations.length === 0 && !convLoading && (
+                <>
+                  {startError && (
+                    <p className="text-xs mb-3 flex items-center gap-1" style={{ color: "#E8604C" }}>
+                      <AlertCircle size={12} />{startError}
+                    </p>
+                  )}
+                  <button
+                    onClick={startConversation}
+                    disabled={startingNew}
+                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white disabled:opacity-60 transition-all hover:-translate-y-0.5"
+                    style={{ background: "linear-gradient(135deg, #0D3B44, #1A535C)" }}
+                  >
+                    {startingNew
+                      ? <Loader2 size={14} className="animate-spin" />
+                      : <MessageCircle size={14} />}
+                    Message Your Therapist
+                  </button>
+                </>
+              )}
             </div>
           )}
         </div>
