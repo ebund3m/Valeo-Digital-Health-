@@ -1,11 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { signOut } from "firebase/auth";
 import { auth } from "@/lib/firebase";
+import { db } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
+import { collection, query, where, onSnapshot } from "firebase/firestore";
 import {
   LayoutDashboard,
   Calendar,
@@ -18,40 +20,78 @@ import {
   X,
   Bell,
   Heart,
+  Settings,
+  ChevronRight,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+// ── Nav items ─────────────────────────────────────────────────────────────
+// FIX: Settings added; order intentional (Settings near bottom, above sign-out)
 const navItems = [
-  { href: "/client",              label: "Dashboard",     icon: LayoutDashboard },
-  { href: "/client/appointments", label: "Appointments",  icon: Calendar },
-  { href: "/client/my-doctor", label: "My Therapist", icon: Heart },
-  { href: "/client/assessments",  label: "Assessments",   icon: ClipboardList },
-  { href: "/client/messages",     label: "Messages",      icon: MessageSquare },
-  { href: "/client/payments",     label: "Payments",      icon: CreditCard },
-  { href: "/client/profile",      label: "Profile",       icon: User },
+  { href: "/client",              label: "Dashboard",    icon: LayoutDashboard },
+  { href: "/client/appointments", label: "Appointments", icon: Calendar        },
+  { href: "/client/my-doctor",    label: "My Therapist", icon: Heart           },
+  { href: "/client/assessments",  label: "Assessments",  icon: ClipboardList   },
+  { href: "/client/messages",     label: "Messages",     icon: MessageSquare   },
+  { href: "/client/payments",     label: "Payments",     icon: CreditCard      },
+  { href: "/client/profile",      label: "Profile",      icon: User            },
+  { href: "/client/settings",     label: "Settings",     icon: Settings        },
 ];
 
-export default function ClientLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
-  const pathname        = usePathname();
-  const router          = useRouter();
-  const { user }        = useAuth();
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+export default function ClientLayout({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
+  const router   = useRouter();
+  const { user } = useAuth();
+  const [sidebarOpen,    setSidebarOpen]    = useState(false);
+  const [unreadMessages, setUnreadMessages] = useState(0);
+
+  const firstName = user?.displayName?.split(" ")[0] ?? "there";
+
+  // ── FIX: Real unread message count via onSnapshot ─────────────────────
+  useEffect(() => {
+    if (!user) return;
+    const q = query(
+      collection(db, "messages"),
+      where("participants", "array-contains", user.uid),
+    );
+    const unsub = onSnapshot(q, snap => {
+      let unread = 0;
+      snap.docs.forEach(d => {
+        const data = d.data();
+        if (data.lastSenderId !== user.uid && data.lastMessage && !data.readByClient)
+          unread++;
+      });
+      setUnreadMessages(unread);
+    });
+    return () => unsub();
+  }, [user]);
+
+  // ── FIX: Escape key closes mobile sidebar ─────────────────────────────
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    if (e.key === "Escape" && sidebarOpen) setSidebarOpen(false);
+  }, [sidebarOpen]);
+  useEffect(() => {
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [handleKeyDown]);
 
   async function handleSignOut() {
     await signOut(auth);
     router.push("/login");
   }
 
-  const firstName = user?.displayName?.split(" ")[0] ?? "there";
+  // ── FIX: startsWith-aware active check (sub-routes highlight correctly) ─
+  function isActive(href: string): boolean {
+    if (href === "/client") return pathname === "/client";
+    return pathname === href || pathname.startsWith(href + "/");
+  }
+
+  const pageTitle = navItems.find(i => isActive(i.href))?.label ?? "Dashboard";
 
   return (
-    <div className="min-h-screen flex" style={{ background: "#F5F4F0" }}>
+    <div className="min-h-screen flex overflow-hidden" style={{ background: "#F5F4F0" }}>
 
-      {/* ── Mobile overlay ── */}
+      {/* Mobile overlay */}
       {sidebarOpen && (
         <div
           className="fixed inset-0 z-20 bg-black/40 lg:hidden"
@@ -59,40 +99,40 @@ export default function ClientLayout({
         />
       )}
 
-      {/* ── Sidebar ── */}
+      {/* ── SIDEBAR ───────────────────────────────────────────────── */}
       <aside
         className={cn(
           "fixed top-0 left-0 h-full z-30 flex flex-col transition-transform duration-300",
-          "w-64 lg:!translate-x-0 lg:static lg:z-auto",
+          // FIX: lg:!translate-x-0 prevents sidebar flash on desktop
+          "lg:!translate-x-0 lg:static lg:z-auto",
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
         )}
-        style={{ background: "#0D3B44", width: "256px" }}
+        style={{ width: "256px", minWidth: "256px", background: "#0D3B44" }}
       >
         {/* Logo */}
         <div className="flex items-center justify-between px-6 py-6 border-b border-white/10">
           <div>
-            <span
-              className="text-white text-lg block"
-              style={{ fontFamily: "var(--font-dm-serif)" }}
-            >
+            <span className="text-white text-lg block" style={{ fontFamily: "var(--font-dm-serif)" }}>
               Valeo
             </span>
-            <span className="text-xs tracking-widest uppercase"
-              style={{ color: "#4ECDC4" }}>
+            <span className="text-xs tracking-widest uppercase" style={{ color: "#4ECDC4" }}>
               Health Platform
             </span>
           </div>
           <button
             onClick={() => setSidebarOpen(false)}
-            className="lg:hidden text-white/50 hover:text-white"
+            className="lg:hidden text-white/50 hover:text-white transition-colors"
+            aria-label="Close sidebar"
           >
             <X size={18} />
           </button>
         </div>
 
         {/* User pill */}
-        <div className="mx-4 mt-5 mb-2 rounded-xl p-3 flex items-center gap-3"
-          style={{ background: "rgba(255,255,255,0.07)" }}>
+        <div
+          className="mx-4 mt-5 mb-2 rounded-xl p-3 flex items-center gap-3"
+          style={{ background: "rgba(255,255,255,0.07)" }}
+        >
           <div
             className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold flex-shrink-0"
             style={{ background: "#4ECDC4", color: "#0D3B44" }}
@@ -109,12 +149,17 @@ export default function ClientLayout({
 
         {/* Nav */}
         <nav className="flex-1 px-3 py-2 space-y-0.5 overflow-y-auto">
-          <p className="text-xs font-semibold tracking-widest uppercase px-3 py-2"
-            style={{ color: "rgba(255,255,255,0.3)" }}>
+          <p
+            className="text-xs font-semibold tracking-widest uppercase px-3 py-2"
+            style={{ color: "rgba(255,255,255,0.3)" }}
+          >
             Menu
           </p>
+
           {navItems.map(({ href, label, icon: Icon }) => {
-            const active = pathname === href;
+            const active  = isActive(href);
+            const isMsgs  = href === "/client/messages";
+
             return (
               <Link
                 key={href}
@@ -122,14 +167,29 @@ export default function ClientLayout({
                 onClick={() => setSidebarOpen(false)}
                 className={cn(
                   "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150",
-                  active
-                    ? "text-ocean"
-                    : "text-white/60 hover:text-white hover:bg-white/5"
+                  active ? "" : "text-white/60 hover:text-white hover:bg-white/5"
                 )}
                 style={active ? { background: "#4ECDC4", color: "#0D3B44" } : {}}
               >
                 <Icon size={17} />
-                {label}
+                <span className="flex-1">{label}</span>
+
+                {/* FIX: Unread badge on Messages nav item */}
+                {isMsgs && unreadMessages > 0 && (
+                  <span
+                    className="flex items-center justify-center rounded-full text-xs font-bold min-w-[18px] h-[18px] px-1"
+                    style={{
+                      background: active ? "#0D3B44" : "#E8604C",
+                      color: "white",
+                      fontSize: "10px",
+                    }}
+                  >
+                    {unreadMessages > 9 ? "9+" : unreadMessages}
+                  </span>
+                )}
+
+                {/* FIX: Active chevron — skipped on messages so badge shows instead */}
+                {active && !isMsgs && <ChevronRight size={13} />}
               </Link>
             );
           })}
@@ -139,8 +199,7 @@ export default function ClientLayout({
         <div className="p-3 border-t border-white/10">
           <button
             onClick={handleSignOut}
-            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm
-                       text-white/50 hover:text-white hover:bg-white/5 transition-all"
+            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-white/50 hover:text-white hover:bg-white/5 transition-all"
           >
             <LogOut size={16} />
             Sign Out
@@ -148,41 +207,50 @@ export default function ClientLayout({
         </div>
       </aside>
 
-      {/* ── Main content ── */}
-      <div className="flex-1 flex flex-col min-w-0 lg:ml-0">
+      {/* ── MAIN CONTENT ──────────────────────────────────────────── */}
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
 
         {/* Top bar */}
         <header
           className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 border-b"
-          style={{ background: "rgba(245,244,240,0.92)", backdropFilter: "blur(12px)", borderColor: "rgba(13,59,68,0.08)" }}
+          style={{
+            background: "rgba(245,244,240,0.92)",
+            backdropFilter: "blur(12px)",
+            borderColor: "rgba(13,59,68,0.08)",
+          }}
         >
           <div className="flex items-center gap-4">
             <button
               onClick={() => setSidebarOpen(true)}
               className="lg:hidden p-2 rounded-lg hover:bg-black/5"
               style={{ color: "#0D3B44" }}
+              aria-label="Open sidebar"
             >
               <Menu size={20} />
             </button>
-            <div>
-              <h1
-                className="text-lg font-medium"
-                style={{ fontFamily: "var(--font-dm-serif)", color: "#0D3B44" }}
-              >
-                {navItems.find(i => i.href === pathname)?.label ?? "Dashboard"}
-              </h1>
-            </div>
+            {/* FIX: Header title uses startsWith-aware pageTitle */}
+            <h1
+              className="text-lg font-medium"
+              style={{ fontFamily: "var(--font-dm-serif)", color: "#0D3B44" }}
+            >
+              {pageTitle}
+            </h1>
           </div>
 
           <div className="flex items-center gap-3">
-            {/* Notification bell */}
-            <button className="relative p-2 rounded-lg hover:bg-black/5 transition-colors"
-              style={{ color: "#4A5568" }}>
+            {/* FIX: Bell only shows red dot when there are real unread messages */}
+            <button
+              className="relative p-2 rounded-lg hover:bg-black/5 transition-colors"
+              style={{ color: "#4A5568" }}
+              aria-label="Notifications"
+            >
               <Bell size={18} />
-              <span
-                className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full"
-                style={{ background: "#E8604C" }}
-              />
+              {unreadMessages > 0 && (
+                <span
+                  className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full"
+                  style={{ background: "#E8604C" }}
+                />
+              )}
             </button>
 
             {/* Book session CTA */}
@@ -198,7 +266,7 @@ export default function ClientLayout({
         </header>
 
         {/* Page content */}
-        <main className="flex-1 p-6">
+        <main className="flex-1 p-6 overflow-y-auto">
           {children}
         </main>
       </div>
