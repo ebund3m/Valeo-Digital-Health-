@@ -30,7 +30,8 @@ export interface Conversation {
   lastSenderId:  string;
   unreadClient:  number;
   unreadDoctor:  number;
-  createdAt:     any;
+  createdAt:            any;
+  doctorSpecialization?: string;
 }
 
 export interface Message {
