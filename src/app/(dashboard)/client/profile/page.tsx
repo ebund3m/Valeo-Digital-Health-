@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { doc, getDoc, updateDoc, serverTimestamp } from "firebase/firestore";
 import { updateProfile, updatePassword, EmailAuthProvider, reauthenticateWithCredential } from "firebase/auth";
 import { db, auth } from "@/lib/firebase";
@@ -8,7 +8,7 @@ import { useAuth } from "@/context/AuthContext";
 import {
   User, Mail, Phone, MapPin, Shield, Lock,
   CheckCircle, AlertCircle, Loader2, Edit3, Save, X,
-  Heart, Clock, Users,
+  Heart, Clock, Users, AlertTriangle,
 } from "lucide-react";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -38,6 +38,33 @@ const GOALS = [
   "General mental wellness",
 ];
 
+// FIX 1: Accent → rgba map (replaces invalid hex-alpha string concat)
+const ACCENT_RGBA: Record<string, string> = {
+  "#0D3B44": "rgba(13,59,68,0.1)",
+  "#4ECDC4": "rgba(78,205,196,0.1)",
+  "#E8604C": "rgba(232,96,76,0.1)",
+  "#D4A853": "rgba(212,168,83,0.1)",
+};
+
+// S1: First + last initial when name has a space
+function getInitials(name: string): string {
+  const parts = name.trim().split(/\s+/);
+  if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  return (parts[0]?.[0] ?? "U").toUpperCase();
+}
+
+// S3: Password strength helper
+function passwordStrength(pw: string): { level: 0|1|2|3; label: string; color: string } {
+  if (!pw) return { level: 0, label: "", color: "" };
+  let score = 0;
+  if (pw.length >= 8)  score++;
+  if (pw.length >= 12) score++;
+  if (/[A-Z]/.test(pw) && /[0-9]/.test(pw)) score++;
+  if (score <= 1) return { level: 1, label: "Weak",   color: "#E8604C" };
+  if (score === 2) return { level: 2, label: "Fair",   color: "#D4A853" };
+  return              { level: 3, label: "Strong", color: "#2BA8A0" };
+}
+
 // ── Section wrapper ────────────────────────────────────────────────────────
 function Section({
   title, icon: Icon, children, accent = "#0D3B44",
@@ -50,8 +77,9 @@ function Section({
       style={{ background: "white", boxShadow: "0 1px 4px rgba(13,59,68,0.07)" }}>
       <div className="flex items-center gap-2 mb-5 pb-4 border-b"
         style={{ borderColor: "rgba(13,59,68,0.07)" }}>
+        {/* FIX 1: Use ACCENT_RGBA map, not accent+"12" string concat */}
         <div className="w-8 h-8 rounded-lg flex items-center justify-center"
-          style={{ background: accent + "12" }}>
+          style={{ background: ACCENT_RGBA[accent] ?? "rgba(13,59,68,0.1)" }}>
           <Icon size={16} style={{ color: accent }} />
         </div>
         <h3 className="text-sm font-semibold" style={{ color: "#0D3B44" }}>{title}</h3>
@@ -95,13 +123,60 @@ function Input({ value, onChange, placeholder, type = "text" }: {
   );
 }
 
-// ── Toast ──────────────────────────────────────────────────────────────────
-function Toast({ type, msg }: { type: "success"|"error"; msg: string }) {
+// ── Edit action buttons (reusable) ─────────────────────────────────────────
+function EditActions({ saving, onCancel, onSave }: {
+  saving: boolean; onCancel: () => void; onSave: () => void;
+}) {
   return (
-    <div className="fixed top-6 right-6 z-50 flex items-center gap-3 px-5 py-3.5 rounded-2xl shadow-lg text-sm font-medium animate-fade-in"
+    <div className="flex items-center gap-2">
+      <button onClick={onCancel}
+        className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg"
+        style={{ color: "#8A9BA8", background: "rgba(13,59,68,0.04)" }}>
+        <X size={12} /> Cancel
+      </button>
+      <button onClick={onSave} disabled={saving}
+        className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg text-white disabled:opacity-60"
+        style={{ background: "linear-gradient(135deg, #0D3B44, #1A535C)" }}>
+        {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+        Save
+      </button>
+    </div>
+  );
+}
+
+// ── Toast ──────────────────────────────────────────────────────────────────
+function Toast({ type, msg }: { type: "success" | "error"; msg: string }) {
+  return (
+    <div className="fixed top-6 right-6 z-50 flex items-center gap-3 px-5 py-3.5 rounded-2xl shadow-lg text-sm font-medium"
       style={{ background: type === "success" ? "#0D3B44" : "#E8604C", color: "white" }}>
       {type === "success" ? <CheckCircle size={16} /> : <AlertCircle size={16} />}
       {msg}
+    </div>
+  );
+}
+
+// S2: Profile completeness indicator
+function CompletenessBar({ profile }: { profile: ProfileData }) {
+  const fields = [
+    profile.displayName,
+    profile.phone,
+    profile.dateOfBirth,
+    profile.city,
+    profile.goals.length > 0 ? "yes" : "",
+    profile.emergencyContact.name,
+  ];
+  const filled = fields.filter(Boolean).length;
+  const pct = Math.round((filled / fields.length) * 100);
+  const color = pct < 50 ? "#D4A853" : pct < 100 ? "#4ECDC4" : "#2BA8A0";
+  return (
+    <div className="flex items-center gap-3">
+      <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: "rgba(13,59,68,0.08)" }}>
+        <div className="h-full rounded-full transition-all duration-500"
+          style={{ width: `${pct}%`, background: color }} />
+      </div>
+      <span className="text-xs font-semibold flex-shrink-0" style={{ color }}>
+        {pct}% complete
+      </span>
     </div>
   );
 }
@@ -110,54 +185,67 @@ function Toast({ type, msg }: { type: "success"|"error"; msg: string }) {
 export default function ClientProfilePage() {
   const { user } = useAuth();
 
-  const [profile, setProfile]       = useState<ProfileData>({
+  const emptyProfile: ProfileData = {
     displayName: "", email: "", phone: "", dateOfBirth: "",
     country: "", city: "", goals: [], preferredTime: "",
     emergencyContact: { name: "", phone: "" },
-  });
-  const [draft, setDraft]           = useState<ProfileData>(profile);
-  const [loading, setLoading]       = useState(true);
+  };
+
+  const [profile, setProfile]         = useState<ProfileData>(emptyProfile);
+  const [draft, setDraft]             = useState<ProfileData>(emptyProfile);
+  const [loading, setLoading]         = useState(true);
+  const [fetchError, setFetchError]   = useState<string | null>(null); // FIX 2
   const [editSection, setEditSection] = useState<string | null>(null);
-  const [saving, setSaving]         = useState(false);
-  const [toast, setToast]           = useState<{ type: "success"|"error"; msg: string } | null>(null);
+  const [saving, setSaving]           = useState(false);
+  const [toast, setToast]             = useState<{ type: "success" | "error"; msg: string } | null>(null);
 
-  // Password change state
-  const [currentPassword, setCurrentPassword] = useState("");
-  const [newPassword, setNewPassword]         = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
-  const [pwSaving, setPwSaving]               = useState(false);
-  const [pwError, setPwError]                 = useState<string | null>(null);
+  // Password state
+  const [currentPassword,  setCurrentPassword]  = useState("");
+  const [newPassword,      setNewPassword]       = useState("");
+  const [confirmPassword,  setConfirmPassword]   = useState("");
+  const [pwSaving,         setPwSaving]          = useState(false);
+  const [pwError,          setPwError]           = useState<string | null>(null);
 
-  function showToast(type: "success"|"error", msg: string) {
+  // FIX 3: Toast timer via ref for cleanup
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function showToast(type: "success" | "error", msg: string) {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
     setToast({ type, msg });
-    setTimeout(() => setToast(null), 4000);
+    toastTimer.current = setTimeout(() => setToast(null), 4000);
   }
+  useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
 
-  // Load profile from Firestore
+  // FIX 2: try/catch on profile load
   useEffect(() => {
     if (!user) return;
     (async () => {
-      const snap = await getDoc(doc(db, "users", user.uid));
-      if (snap.exists()) {
-        const d = snap.data();
-        const loaded: ProfileData = {
-          displayName:   d.displayName   ?? user.displayName ?? "",
-          email:         d.email         ?? user.email ?? "",
-          phone:         d.phone         ?? "",
-          dateOfBirth:   d.dateOfBirth   ?? "",
-          country:       d.country       ?? "",
-          city:          d.city          ?? "",
-          goals:         d.goals         ?? [],
-          preferredTime: d.preferredTime ?? "",
-          emergencyContact: {
-            name:  d.emergencyContact?.name  ?? "",
-            phone: d.emergencyContact?.phone ?? "",
-          },
-        };
-        setProfile(loaded);
-        setDraft(loaded);
+      try {
+        const snap = await getDoc(doc(db, "users", user.uid));
+        if (snap.exists()) {
+          const d = snap.data();
+          const loaded: ProfileData = {
+            displayName:   d.displayName   ?? user.displayName ?? "",
+            email:         d.email         ?? user.email ?? "",
+            phone:         d.phone         ?? "",
+            dateOfBirth:   d.dateOfBirth   ?? "",
+            country:       d.country       ?? "",
+            city:          d.city          ?? "",
+            goals:         d.goals         ?? [],
+            preferredTime: d.preferredTime ?? "",
+            emergencyContact: {
+              name:  d.emergencyContact?.name  ?? "",
+              phone: d.emergencyContact?.phone ?? "",
+            },
+          };
+          setProfile(loaded);
+          setDraft(loaded);
+        }
+      } catch (err) {
+        console.error("[Profile] load:", err);
+        setFetchError("Could not load your profile. Please refresh.");
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     })();
   }, [user]);
 
@@ -171,38 +259,52 @@ export default function ClientProfilePage() {
     setEditSection(null);
   }
 
+  // FIX 5: Only write the fields relevant to the active section
   async function saveSection() {
     if (!user) return;
     setSaving(true);
     try {
-      await updateDoc(doc(db, "users", user.uid), {
-        displayName:      draft.displayName,
-        phone:            draft.phone,
-        dateOfBirth:      draft.dateOfBirth,
-        country:          draft.country,
-        city:             draft.city,
-        goals:            draft.goals,
-        preferredTime:    draft.preferredTime,
-        emergencyContact: draft.emergencyContact,
-        updatedAt:        serverTimestamp(),
-      });
+      // Build a partial update based on which section is open
+      let partial: Record<string, any> = { updatedAt: serverTimestamp() };
 
-      // Update Firebase Auth display name if changed
-      if (draft.displayName !== profile.displayName) {
-        await updateProfile(user, { displayName: draft.displayName });
+      if (editSection === "personal") {
+        partial = {
+          ...partial,
+          displayName: draft.displayName,
+          phone:       draft.phone,
+          dateOfBirth: draft.dateOfBirth,
+          country:     draft.country,
+          city:        draft.city,
+        };
+        if (draft.displayName !== profile.displayName) {
+          await updateProfile(user, { displayName: draft.displayName });
+        }
+      } else if (editSection === "goals") {
+        partial = {
+          ...partial,
+          goals:         draft.goals,
+          preferredTime: draft.preferredTime,
+        };
+      } else if (editSection === "emergency") {
+        partial = {
+          ...partial,
+          emergencyContact: draft.emergencyContact,
+        };
       }
 
+      await updateDoc(doc(db, "users", user.uid), partial);
       setProfile({ ...draft });
       setEditSection(null);
       showToast("success", "Profile updated successfully.");
     } catch (err) {
-      console.error(err);
+      console.error("[Profile] save:", err);
       showToast("error", "Failed to save. Please try again.");
     } finally {
       setSaving(false);
     }
   }
 
+  // FIX 9: finally block ensures pwSaving always clears
   async function handlePasswordChange() {
     if (!user || !user.email) return;
     setPwError(null);
@@ -216,11 +318,9 @@ export default function ClientProfilePage() {
 
     setPwSaving(true);
     try {
-      // Re-authenticate first
       const credential = EmailAuthProvider.credential(user.email, currentPassword);
       await reauthenticateWithCredential(user, credential);
       await updatePassword(user, newPassword);
-
       setCurrentPassword(""); setNewPassword(""); setConfirmPassword("");
       setEditSection(null);
       showToast("success", "Password changed successfully.");
@@ -231,7 +331,7 @@ export default function ClientProfilePage() {
         setPwError("Failed to change password. Please try again.");
       }
     } finally {
-      setPwSaving(false);
+      setPwSaving(false); // always clears
     }
   }
 
@@ -243,6 +343,16 @@ export default function ClientProfilePage() {
         : [...d.goals, goal],
     }));
   }
+
+  // Password strength (S3)
+  const strength = passwordStrength(newPassword);
+
+  // Last sign-in for password row (BUG 7)
+  const lastSignIn = user?.metadata?.lastSignInTime
+    ? new Date(user.metadata.lastSignInTime).toLocaleDateString("en-US", {
+        month: "short", day: "numeric", year: "numeric",
+      })
+    : null;
 
   if (loading) {
     return (
@@ -258,17 +368,29 @@ export default function ClientProfilePage() {
     <div className="max-w-3xl mx-auto space-y-5">
       {toast && <Toast type={toast.type} msg={toast.msg} />}
 
+      {/* FIX 2: Fetch error banner */}
+      {fetchError && (
+        <div className="rounded-2xl p-4 flex items-start gap-3"
+          style={{ background: "rgba(232,96,76,0.06)", border: "1px solid rgba(232,96,76,0.15)" }}>
+          <AlertTriangle size={15} className="flex-shrink-0 mt-0.5" style={{ color: "#E8604C" }} />
+          <p className="text-sm" style={{ color: "#E8604C" }}>{fetchError}</p>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex items-center gap-4">
-        <div className="w-16 h-16 rounded-2xl flex items-center justify-center text-2xl font-bold flex-shrink-0"
+        {/* S1: First + last initials */}
+        <div className="w-16 h-16 rounded-2xl flex items-center justify-center text-xl font-bold flex-shrink-0"
           style={{ background: "linear-gradient(135deg, #0D3B44, #1A535C)", color: "white" }}>
-          {profile.displayName?.[0]?.toUpperCase() ?? "U"}
+          {getInitials(profile.displayName || user?.displayName || "U")}
         </div>
-        <div>
+        <div className="flex-1 min-w-0">
           <h2 className="text-2xl" style={{ fontFamily: "var(--font-dm-serif)", color: "#0D3B44" }}>
             {profile.displayName || "Your Profile"}
           </h2>
-          <p className="text-sm" style={{ color: "#8A9BA8" }}>{profile.email}</p>
+          <p className="text-sm mb-2" style={{ color: "#8A9BA8" }}>{profile.email}</p>
+          {/* S2: Completeness bar */}
+          <CompletenessBar profile={profile} />
         </div>
       </div>
 
@@ -283,39 +405,39 @@ export default function ClientProfilePage() {
               <Edit3 size={12} /> Edit
             </button>
           ) : (
-            <div className="flex items-center gap-2">
-              <button onClick={cancelEdit}
-                className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg"
-                style={{ color: "#8A9BA8", background: "rgba(13,59,68,0.04)" }}>
-                <X size={12} /> Cancel
-              </button>
-              <button onClick={saveSection} disabled={saving}
-                className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg text-white disabled:opacity-60"
-                style={{ background: "linear-gradient(135deg, #0D3B44, #1A535C)" }}>
-                {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
-                Save
-              </button>
-            </div>
+            <EditActions saving={saving} onCancel={cancelEdit} onSave={saveSection} />
           )}
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Field label="Full Name" value={profile.displayName} editing={isEditing("personal")}>
-            <Input value={draft.displayName} onChange={v => setDraft(d => ({ ...d, displayName: v }))} placeholder="Your full name" />
+            <Input value={draft.displayName}
+              onChange={v => setDraft(d => ({ ...d, displayName: v }))}
+              placeholder="Your full name" />
           </Field>
-          <Field label="Email Address" value={profile.email} editing={false}>
-            <Input value={draft.email} onChange={() => {}} placeholder="" />
-          </Field>
+
+          {/* FIX 4: Email is always read-only — no Input child, no dead onChange */}
+          <Field label="Email Address" value={profile.email} editing={false} />
+
           <Field label="Phone Number" value={profile.phone} editing={isEditing("personal")}>
-            <Input value={draft.phone} onChange={v => setDraft(d => ({ ...d, phone: v }))} placeholder="+1 (868) 000-0000" />
+            {/* FIX 10: Generic Caribbean format placeholder */}
+            <Input value={draft.phone}
+              onChange={v => setDraft(d => ({ ...d, phone: v }))}
+              placeholder="+1 (xxx) xxx-xxxx" />
           </Field>
           <Field label="Date of Birth" value={profile.dateOfBirth} editing={isEditing("personal")}>
-            <Input value={draft.dateOfBirth} onChange={v => setDraft(d => ({ ...d, dateOfBirth: v }))} type="date" />
+            <Input value={draft.dateOfBirth}
+              onChange={v => setDraft(d => ({ ...d, dateOfBirth: v }))}
+              type="date" />
           </Field>
           <Field label="City" value={profile.city} editing={isEditing("personal")}>
-            <Input value={draft.city} onChange={v => setDraft(d => ({ ...d, city: v }))} placeholder="Kingstown" />
+            <Input value={draft.city}
+              onChange={v => setDraft(d => ({ ...d, city: v }))}
+              placeholder="Port of Spain" />
           </Field>
           <Field label="Country" value={profile.country} editing={isEditing("personal")}>
-            <Input value={draft.country} onChange={v => setDraft(d => ({ ...d, country: v }))} placeholder="St. Vincent & the Grenadines" />
+            <Input value={draft.country}
+              onChange={v => setDraft(d => ({ ...d, country: v }))}
+              placeholder="Trinidad & Tobago" />
           </Field>
         </div>
       </Section>
@@ -335,19 +457,7 @@ export default function ClientProfilePage() {
               <Edit3 size={12} /> Edit
             </button>
           ) : (
-            <div className="flex items-center gap-2">
-              <button onClick={cancelEdit}
-                className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg"
-                style={{ color: "#8A9BA8", background: "rgba(13,59,68,0.04)" }}>
-                <X size={12} /> Cancel
-              </button>
-              <button onClick={saveSection} disabled={saving}
-                className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg text-white disabled:opacity-60"
-                style={{ background: "linear-gradient(135deg, #0D3B44, #1A535C)" }}>
-                {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
-                Save
-              </button>
-            </div>
+            <EditActions saving={saving} onCancel={cancelEdit} onSave={saveSection} />
           )}
         </div>
 
@@ -373,6 +483,7 @@ export default function ClientProfilePage() {
             <div>
               <label className="block text-xs font-semibold uppercase tracking-wider mb-1.5"
                 style={{ color: "#8A9BA8" }}>Preferred Session Time</label>
+              {/* FIX 8: Added Evening option */}
               <select value={draft.preferredTime}
                 onChange={e => setDraft(d => ({ ...d, preferredTime: e.target.value }))}
                 className="w-full px-3 py-2.5 rounded-xl text-sm border focus:outline-none"
@@ -380,6 +491,7 @@ export default function ClientProfilePage() {
                 <option value="">No preference</option>
                 <option value="morning">Morning (9am – 12pm)</option>
                 <option value="afternoon">Afternoon (12pm – 4pm)</option>
+                <option value="evening">Evening (4pm – 7pm)</option>
               </select>
             </div>
           </div>
@@ -401,7 +513,12 @@ export default function ClientProfilePage() {
               <div className="flex items-center gap-2 mt-2">
                 <Clock size={13} style={{ color: "#8A9BA8" }} />
                 <span className="text-xs" style={{ color: "#8A9BA8" }}>
-                  Preferred: {profile.preferredTime === "morning" ? "Morning (9am – 12pm)" : "Afternoon (12pm – 4pm)"}
+                  Preferred: {
+                    profile.preferredTime === "morning"   ? "Morning (9am – 12pm)" :
+                    profile.preferredTime === "afternoon" ? "Afternoon (12pm – 4pm)" :
+                    profile.preferredTime === "evening"   ? "Evening (4pm – 7pm)" :
+                    profile.preferredTime
+                  }
                 </span>
               </div>
             )}
@@ -420,19 +537,7 @@ export default function ClientProfilePage() {
               <Edit3 size={12} /> Edit
             </button>
           ) : (
-            <div className="flex items-center gap-2">
-              <button onClick={cancelEdit}
-                className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg"
-                style={{ color: "#8A9BA8", background: "rgba(13,59,68,0.04)" }}>
-                <X size={12} /> Cancel
-              </button>
-              <button onClick={saveSection} disabled={saving}
-                className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg text-white disabled:opacity-60"
-                style={{ background: "linear-gradient(135deg, #0D3B44, #1A535C)" }}>
-                {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
-                Save
-              </button>
-            </div>
+            <EditActions saving={saving} onCancel={cancelEdit} onSave={saveSection} />
           )}
         </div>
         <div className="grid sm:grid-cols-2 gap-4">
@@ -444,7 +549,7 @@ export default function ClientProfilePage() {
           <Field label="Phone Number" value={profile.emergencyContact.phone} editing={isEditing("emergency")}>
             <Input value={draft.emergencyContact.phone}
               onChange={v => setDraft(d => ({ ...d, emergencyContact: { ...d.emergencyContact, phone: v } }))}
-              placeholder="+1 (868) 000-0000" />
+              placeholder="+1 (xxx) xxx-xxxx" />
           </Field>
         </div>
       </Section>
@@ -460,7 +565,10 @@ export default function ClientProfilePage() {
               <Lock size={12} /> Change Password
             </button>
           ) : (
-            <button onClick={() => { setEditSection(null); setPwError(null); setCurrentPassword(""); setNewPassword(""); setConfirmPassword(""); }}
+            <button onClick={() => {
+              setEditSection(null); setPwError(null);
+              setCurrentPassword(""); setNewPassword(""); setConfirmPassword("");
+            }}
               className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg"
               style={{ color: "#8A9BA8", background: "rgba(13,59,68,0.04)" }}>
               <X size={12} /> Cancel
@@ -479,7 +587,8 @@ export default function ClientProfilePage() {
             <div>
               <label className="block text-xs font-semibold uppercase tracking-wider mb-1.5"
                 style={{ color: "#8A9BA8" }}>Current Password</label>
-              <input type="password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)}
+              <input type="password" value={currentPassword}
+                onChange={e => setCurrentPassword(e.target.value)}
                 placeholder="Your current password"
                 className="w-full px-3 py-2.5 rounded-xl text-sm border focus:outline-none"
                 style={{ borderColor: "rgba(13,59,68,0.15)", background: "#FAFAFA" }} />
@@ -487,26 +596,47 @@ export default function ClientProfilePage() {
             <div>
               <label className="block text-xs font-semibold uppercase tracking-wider mb-1.5"
                 style={{ color: "#8A9BA8" }}>New Password</label>
-              <input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)}
+              <input type="password" value={newPassword}
+                onChange={e => setNewPassword(e.target.value)}
                 placeholder="Min. 8 characters"
                 className="w-full px-3 py-2.5 rounded-xl text-sm border focus:outline-none"
                 style={{ borderColor: "rgba(13,59,68,0.15)", background: "#FAFAFA" }} />
+              {/* S3: Password strength meter */}
+              {newPassword && (
+                <div className="mt-2">
+                  <div className="flex gap-1 mb-1">
+                    {[1, 2, 3].map(i => (
+                      <div key={i} className="flex-1 h-1 rounded-full transition-all"
+                        style={{
+                          background: i <= strength.level ? strength.color : "rgba(13,59,68,0.08)",
+                        }} />
+                    ))}
+                  </div>
+                  <p className="text-xs" style={{ color: strength.color }}>{strength.label}</p>
+                </div>
+              )}
             </div>
             <div>
               <label className="block text-xs font-semibold uppercase tracking-wider mb-1.5"
                 style={{ color: "#8A9BA8" }}>Confirm New Password</label>
-              <input type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)}
+              <input type="password" value={confirmPassword}
+                onChange={e => setConfirmPassword(e.target.value)}
                 placeholder="Repeat new password"
                 className="w-full px-3 py-2.5 rounded-xl text-sm border focus:outline-none"
-                style={{ borderColor: confirmPassword && confirmPassword !== newPassword ? "#E8604C" : "rgba(13,59,68,0.15)", background: "#FAFAFA" }} />
+                style={{
+                  borderColor: confirmPassword && confirmPassword !== newPassword
+                    ? "#E8604C" : "rgba(13,59,68,0.15)",
+                  background: "#FAFAFA",
+                }} />
               {confirmPassword && confirmPassword !== newPassword && (
                 <p className="text-xs mt-1" style={{ color: "#E8604C" }}>Passwords do not match</p>
               )}
             </div>
-            <button onClick={handlePasswordChange} disabled={pwSaving || !currentPassword || !newPassword || !confirmPassword}
+            <button onClick={handlePasswordChange}
+              disabled={pwSaving || !currentPassword || !newPassword || !confirmPassword}
               className="w-full py-3 rounded-xl text-sm font-semibold text-white disabled:opacity-50 flex items-center justify-center gap-2"
               style={{ background: "linear-gradient(135deg, #0D3B44, #1A535C)" }}>
-              {pwSaving ? <><Loader2 size={14} className="animate-spin" /> Updating...</> : "Update Password"}
+              {pwSaving ? <><Loader2 size={14} className="animate-spin" /> Updating…</> : "Update Password"}
             </button>
           </div>
         )}
@@ -520,7 +650,10 @@ export default function ClientProfilePage() {
             </div>
             <div>
               <p className="text-sm font-medium" style={{ color: "#0D3B44" }}>Password</p>
-              <p className="text-xs" style={{ color: "#8A9BA8" }}>Last changed: unknown</p>
+              {/* FIX 7: Real last sign-in time from Firebase Auth metadata */}
+              <p className="text-xs" style={{ color: "#8A9BA8" }}>
+                {lastSignIn ? `Last sign-in: ${lastSignIn}` : "Password protected"}
+              </p>
             </div>
             <div className="ml-auto">
               <span className="text-xs px-2.5 py-1 rounded-full font-medium"
@@ -532,7 +665,7 @@ export default function ClientProfilePage() {
         )}
       </Section>
 
-      {/* ── Contact preferences ── */}
+      {/* Email change note */}
       <div className="rounded-2xl p-4 flex items-start gap-3"
         style={{ background: "rgba(13,59,68,0.03)", border: "1px solid rgba(13,59,68,0.07)" }}>
         <Mail size={15} className="flex-shrink-0 mt-0.5" style={{ color: "#8A9BA8" }} />
@@ -544,7 +677,6 @@ export default function ClientProfilePage() {
           </a>
         </p>
       </div>
-
     </div>
   );
 }
