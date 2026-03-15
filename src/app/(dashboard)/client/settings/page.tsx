@@ -20,11 +20,7 @@ import {
 // ══════════════════════════════════════════════════════════════
 //  TYPES
 // ══════════════════════════════════════════════════════════════
-interface SettingsPageProps {
-  role: 'admin' | 'doctor' | 'client';
-  accent: string;
-  accentLight: string;
-}
+type UserRole = 'admin' | 'doctor' | 'client';
 
 interface NotifPrefs {
   emailAppointments: boolean;
@@ -32,8 +28,16 @@ interface NotifPrefs {
   emailAssessments:  boolean;
 }
 
-// FIX 1 + 7: Hex-alpha via string concat is invalid CSS cross-browser.
-// This helper converts known brand hex colours to their rgba equivalents.
+// ── Theme derived from role ───────────────────────────────────────────────────
+function getAccentForRole(role: UserRole): { accent: string; accentLight: string } {
+  switch (role) {
+    case 'admin':  return { accent: '#E8604C', accentLight: '#C44D3A' };
+    case 'doctor': return { accent: '#0D3B44', accentLight: '#1A535C' };
+    default:       return { accent: '#E8604C', accentLight: '#C44D3A' };
+  }
+}
+
+// ── Hex-alpha safe helper ─────────────────────────────────────────────────────
 function hexToRgba(hex: string, alpha: number): string {
   const map: Record<string, string> = {
     '#E8604C': `rgba(232,96,76,${alpha})`,
@@ -41,11 +45,12 @@ function hexToRgba(hex: string, alpha: number): string {
     '#4ECDC4': `rgba(78,205,196,${alpha})`,
     '#D4A853': `rgba(212,168,83,${alpha})`,
     '#1A535C': `rgba(26,83,92,${alpha})`,
+    '#C44D3A': `rgba(196,77,58,${alpha})`,
   };
   return map[hex] ?? `rgba(13,59,68,${alpha})`;
 }
 
-// S2: First + last initial
+// ── First + last initial ──────────────────────────────────────────────────────
 function getInitials(name: string): string {
   const parts = name.trim().split(/\s+/);
   if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
@@ -53,10 +58,15 @@ function getInitials(name: string): string {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  COMPONENT
+//  PAGE COMPONENT  — no props (Next.js 14 App Router requirement)
 // ══════════════════════════════════════════════════════════════
-export default function AccountSettingsPage({ role, accent, accentLight }: SettingsPageProps) {
+export default function AccountSettingsPage() {
   const { user } = useAuth();
+
+  // ── Role + theme (derived from Firestore) ─────────────────────────────────
+  const [role,       setRole]       = useState<UserRole>('client');
+  const [accent,     setAccent]     = useState('#E8604C');
+  const [accentLight,setAccentLight]= useState('#C44D3A');
 
   // ── Profile ───────────────────────────────────────────────────────────────
   const [displayName,     setDisplayName]     = useState('');
@@ -64,7 +74,7 @@ export default function AccountSettingsPage({ role, accent, accentLight }: Setti
   const [initName,        setInitName]        = useState('');
   const [initPhone,       setInitPhone]       = useState('');
   const [loadingProfile,  setLoadingProfile]  = useState(true);
-  const [loadError,       setLoadError]       = useState<string | null>(null); // FIX 3
+  const [loadError,       setLoadError]       = useState<string | null>(null);
 
   // ── Password ──────────────────────────────────────────────────────────────
   const [pwCurrent,   setPwCurrent]   = useState('');
@@ -92,8 +102,7 @@ export default function AccountSettingsPage({ role, accent, accentLight }: Setti
   // ── Toast ─────────────────────────────────────────────────────────────────
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
 
-  // FIX 2 + 8: All timers tracked in refs so they can be cleared on unmount
-  //            and so rapid calls don't stack.
+  // ── Timer refs (cleared on unmount) ───────────────────────────────────────
   const toastTimerRef    = useRef<ReturnType<typeof setTimeout> | null>(null);
   const profileTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
   const passwordTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -101,7 +110,6 @@ export default function AccountSettingsPage({ role, accent, accentLight }: Setti
 
   useEffect(() => {
     return () => {
-      // FIX 8: Clear all timers on unmount to prevent setState on unmounted component
       [toastTimerRef, profileTimerRef, passwordTimerRef, notifTimerRef].forEach(ref => {
         if (ref.current) clearTimeout(ref.current);
       });
@@ -124,8 +132,7 @@ export default function AccountSettingsPage({ role, accent, accentLight }: Setti
   }
 
   // ══════════════════════════════════════════════════════════════
-  //  Load profile from Firestore
-  //  FIX 3: try/catch so Firestore errors show an error state
+  //  Load profile + role from Firestore
   // ══════════════════════════════════════════════════════════════
   useEffect(() => {
     if (!user) return;
@@ -142,7 +149,13 @@ export default function AccountSettingsPage({ role, accent, accentLight }: Setti
         setInitName(name);
         setInitPhone(ph);
 
-        // FIX 4: Use functional updater to avoid stale closure over `notifs`
+        // Derive role and matching accent colours
+        const firestoreRole: UserRole = data.role ?? 'client';
+        setRole(firestoreRole);
+        const { accent: a, accentLight: al } = getAccentForRole(firestoreRole);
+        setAccent(a);
+        setAccentLight(al);
+
         if (data.notifPrefs) {
           setNotifs(prev => ({ ...prev, ...data.notifPrefs }));
         }
@@ -155,8 +168,6 @@ export default function AccountSettingsPage({ role, accent, accentLight }: Setti
     })();
   }, [user]);
 
-  // FIX 5: Added `displayName` to deps to fix stale closure lint warning.
-  //        Guard: only sync if Auth has a name but local state is still empty.
   useEffect(() => {
     if (user?.displayName && !displayName) {
       setDisplayName(user.displayName);
@@ -181,7 +192,6 @@ export default function AccountSettingsPage({ role, accent, accentLight }: Setti
   const strengthColor = ['', '#E8604C', '#E8604C', '#D4A853', '#4ECDC4', '#0D3B44'];
 
   const roleLabel    = role === 'admin' ? 'Administrator' : role === 'doctor' ? 'Doctor' : 'Client';
-  // FIX 1: Use hexToRgba() instead of roleBadgeCol + '15'
   const roleBadgeCol = role === 'admin' ? '#E8604C' : role === 'doctor' ? '#0D3B44' : '#4ECDC4';
 
   const lastLogin = user?.metadata?.lastSignInTime
@@ -191,10 +201,7 @@ export default function AccountSettingsPage({ role, accent, accentLight }: Setti
       })
     : null;
 
-  // ══════════════════════════════════════════════════════════════
-  //  SAVE PROFILE
-  //  FIX 10: Consistently save with Dr. prefix for doctors
-  // ══════════════════════════════════════════════════════════════
+  // ── Save profile ──────────────────────────────────────────────────────────
   async function handleSaveProfile() {
     if (!displayName.trim()) {
       setProfileError('Name cannot be empty.');
@@ -204,8 +211,7 @@ export default function AccountSettingsPage({ role, accent, accentLight }: Setti
     setProfileError('');
     try {
       if (auth.currentUser) {
-        // FIX 10: For doctors, ensure Dr. prefix is stored consistently
-        const rawName   = displayName.trim().replace(/^Dr\.\s*/i, '');
+        const rawName    = displayName.trim().replace(/^Dr\.\s*/i, '');
         const nameToSave = role === 'doctor' ? `Dr. ${rawName}` : displayName.trim();
 
         await updateProfile(auth.currentUser, { displayName: nameToSave });
@@ -228,9 +234,7 @@ export default function AccountSettingsPage({ role, accent, accentLight }: Setti
     }
   }
 
-  // ══════════════════════════════════════════════════════════════
-  //  CHANGE PASSWORD
-  // ══════════════════════════════════════════════════════════════
+  // ── Change password ───────────────────────────────────────────────────────
   async function handleChangePassword() {
     setPasswordError('');
     if (!pwCurrent)          { setPasswordError('Please enter your current password.'); return; }
@@ -286,8 +290,6 @@ export default function AccountSettingsPage({ role, accent, accentLight }: Setti
     setNotifsDirty(true);
   }
 
-  // ── Display name shown in the avatar area ─────────────────────────────────
-  // FIX 10: display preview matches what will actually be saved
   const displayedName = role === 'doctor' && displayName
     ? displayName.startsWith('Dr.') ? displayName : `Dr. ${displayName}`
     : displayName || 'Your Name';
@@ -319,7 +321,7 @@ export default function AccountSettingsPage({ role, accent, accentLight }: Setti
         </p>
       </div>
 
-      {/* FIX 3: Load error banner */}
+      {/* Load error banner */}
       {loadError && (
         <div
           className="rounded-2xl p-4 flex items-start gap-3"
@@ -354,23 +356,20 @@ export default function AccountSettingsPage({ role, accent, accentLight }: Setti
           {/* Avatar + role banner */}
           <div className="flex items-center gap-4 mb-6 pb-6"
             style={{ borderBottom: '1px solid rgba(13,59,68,0.06)' }}>
-            {/* S2: First + last initials */}
             <div
-              className="w-16 h-16 rounded-full flex items-center justify-center text-white text-lg font-bold flex-shrink-0"
+              className="w-14 h-14 rounded-2xl flex items-center justify-center text-lg font-bold flex-shrink-0"
               style={{
                 background: `linear-gradient(135deg, ${accent}, ${accentLight})`,
-                fontFamily: 'var(--font-dm-serif)',
+                color: 'white',
               }}
             >
               {getInitials(displayName || user?.email || '?')}
             </div>
             <div>
-              {/* FIX 10: Preview matches what will be saved */}
               <p className="font-semibold text-sm" style={{ color: '#0D3B44' }}>
                 {displayedName}
               </p>
               <p className="text-xs mb-2" style={{ color: '#8A9BA8' }}>{user?.email}</p>
-              {/* FIX 1: hexToRgba() instead of roleBadgeCol + '15' */}
               <span
                 className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold"
                 style={{ background: hexToRgba(roleBadgeCol, 0.12), color: roleBadgeCol }}
@@ -435,7 +434,7 @@ export default function AccountSettingsPage({ role, accent, accentLight }: Setti
                 </p>
               </div>
 
-              {/* Phone — FIX 9: generic format */}
+              {/* Phone */}
               <div>
                 <label className="block text-xs font-semibold uppercase tracking-wider mb-2"
                   style={{ color: '#8A9BA8' }}>
@@ -469,7 +468,6 @@ export default function AccountSettingsPage({ role, accent, accentLight }: Setti
                 disabled={profileStatus === 'saving' || !profileDirty}
                 className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all disabled:opacity-50"
                 style={{
-                  // FIX 7: no hex-alpha in box-shadow — use rgba directly
                   background: profileStatus === 'success'
                     ? 'rgba(78,205,196,0.1)'
                     : `linear-gradient(135deg, ${accent}, ${accentLight})`,
