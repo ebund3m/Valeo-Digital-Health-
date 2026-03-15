@@ -1,93 +1,135 @@
-// src/app/api/wipay/verify-callback/route.ts
-// Called by the client-side callback PAGE (not WiPay directly).
-// Verifies the MD5 hash from WiPay's query params server-side, then
-// updates Firestore payment + appointment + triggers Meet link creation.
+import { NextRequest, NextResponse } from "next/server";
+import { adminDb } from "@/lib/firebase-admin";
+import { FieldValue } from "firebase-admin/firestore";
 
-import { NextResponse } from 'next/server';
-import { adminDb } from '@/lib/firebaseAdmin';
-import { FieldValue } from 'firebase-admin/firestore';
-import crypto from 'crypto';
+// ── WiPay config ──────────────────────────────────────────────────────────────
+const WIPAY_ACCOUNT_NUMBER = process.env.WIPAY_ACCOUNT_NUMBER ?? "";
+const WIPAY_API_KEY        = process.env.WIPAY_API_KEY        ?? "";
+const WIPAY_ENVIRONMENT    = process.env.WIPAY_ENVIRONMENT    ?? "sandbox";
+const WIPAY_BASE_URL       = WIPAY_ENVIRONMENT === "live"
+  ? "https://wipayfinancial.com/v1/gateway"
+  : "https://sandbox.wipayfinancial.com/v1/gateway";
 
-const ACCOUNT_NUMBER = process.env.WIPAY_ACCOUNT_NUMBER ?? '1234567890';
-const API_KEY        = process.env.WIPAY_API_KEY        ?? '123';        // sandbox default
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? "https://www.valeoexperience.com";
 
-export async function POST(req: Request) {
+// ── Session Pricing (USD) ─────────────────────────────────────────────────────
+const SESSION_PRICES: Record<string, number> = {
+  "Individual Therapy": 400,
+  "Couples Therapy":    600,
+  "Life Coaching":      350,
+  "Workplace Wellness": 500,
+  "Free Consultation":  0,
+};
+
+// ── POST /api/payments/initiate ───────────────────────────────────────────────
+export async function POST(req: NextRequest) {
   try {
-    const { status, order_id, transaction_id, hash, total, message } = await req.json();
+    const body = await req.json();
 
-    if (!order_id) {
-      return NextResponse.json({ error: 'Missing order_id.' }, { status: 400 });
+    // ── Debug: log exactly what arrived ──────────────────────────────────────
+    console.log("[Initiate] Raw body:", JSON.stringify(body));
+
+    const {
+      appointmentId,
+      clientId,
+      clientName,
+      clientEmail,
+      sessionType,
+    } = body ?? {};
+
+    // ── Validate required fields with specific logging ────────────────────────
+    const missing: string[] = [];
+    if (!appointmentId) missing.push("appointmentId");
+    if (!clientId)      missing.push("clientId");
+    if (!sessionType)   missing.push("sessionType");
+
+    if (missing.length > 0) {
+      console.error("[Initiate] Missing fields:", missing, "| Body was:", body);
+      return NextResponse.json(
+        { error: `Missing required fields: ${missing.join(", ")}` },
+        { status: 400 }
+      );
     }
 
-    const paymentRef = adminDb.collection('payments').doc(order_id);
-    const paymentSnap = await paymentRef.get();
-
-    if (!paymentSnap.exists) {
-      return NextResponse.json({ error: 'Payment record not found.' }, { status: 404 });
+    // ── Validate env vars ─────────────────────────────────────────────────────
+    if (!WIPAY_ACCOUNT_NUMBER || !WIPAY_API_KEY) {
+      console.error("[Initiate] WiPay env vars missing — WIPAY_ACCOUNT_NUMBER or WIPAY_API_KEY not set");
+      return NextResponse.json({ error: "Payment gateway not configured" }, { status: 503 });
     }
 
-    const payment = paymentSnap.data()!;
+    const amount = SESSION_PRICES[sessionType as string] ?? 400;
 
-    // ── Handle failure ─────────────────────────────────────────────────────
-    // WiPay does NOT include a hash on failed transactions.
-    if (status === 'fail' || status === 'failed') {
-      await paymentRef.update({
-        status:        'failed',
-        wipayMessage:  message ?? 'Payment failed.',
-        updatedAt:     FieldValue.serverTimestamp(),
-      });
-      await adminDb.collection('appointments').doc(payment.appointmentId).update({
-        status:    'payment_failed',
+    // ── Free consultation — skip payment ──────────────────────────────────────
+    if (amount === 0) {
+      await adminDb.collection("appointments").doc(appointmentId).update({
+        status:    "approved",
         updatedAt: FieldValue.serverTimestamp(),
       });
-      return NextResponse.json({ verified: false, status: 'failed' });
+      return NextResponse.json({
+        redirect: `${APP_URL}/client/appointments?success=true&free=true`,
+      });
     }
 
-    // ── Verify MD5 hash on success ─────────────────────────────────────────
-    // Hash formula (from WiPay docs): MD5(account_number + api_key + total + order_id + "success")
-    const expectedHash = crypto
-      .createHash('md5')
-      .update(`${ACCOUNT_NUMBER}${API_KEY}${total}${order_id}success`)
-      .digest('hex');
-
-    if (hash !== expectedHash) {
-      console.error('[WiPay] Hash mismatch. Expected:', expectedHash, 'Got:', hash);
-      return NextResponse.json({ error: 'Hash verification failed.' }, { status: 400 });
-    }
-
-    // ── Mark payment completed ─────────────────────────────────────────────
-    await paymentRef.update({
-      status:          'completed',
-      wipayTransactionId: transaction_id ?? '',
-      wipayMessage:    message ?? '',
-      finalTotal:      parseFloat(total),
-      updatedAt:       FieldValue.serverTimestamp(),
-    });
-
-    // ── Approve appointment + trigger Meet link ────────────────────────────
-    await adminDb.collection('appointments').doc(payment.appointmentId).update({
-      status:    'approved',
-      paymentId: order_id,
+    // ── Create pending payment record in Firestore ────────────────────────────
+    const paymentRef = await adminDb.collection("payments").add({
+      appointmentId,
+      clientId,
+      clientName:  clientName  ?? "Client",
+      clientEmail: clientEmail ?? "",
+      sessionType,
+      amount,
+      currency:  "TTD",
+      status:    "pending",
+      createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     });
 
-    // ── Trigger Google Meet link generation via existing API route ─────────
-    try {
-      const baseUrl = process.env.NEXT_PUBLIC_BASE_URL ?? 'https://www.valeoexperience.com';
-      await fetch(`${baseUrl}/api/appointments/generate-meet`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ appointmentId: payment.appointmentId }),
-      });
-    } catch (meetErr) {
-      // Non-fatal — Meet link can be generated on-demand later
-      console.warn('[WiPay] Meet link generation failed (non-fatal):', meetErr);
+    console.log("[Initiate] Payment record created:", paymentRef.id);
+
+    // ── Build WiPay payload ───────────────────────────────────────────────────
+    const payload = new URLSearchParams({
+      account_number: WIPAY_ACCOUNT_NUMBER,
+      avs:            "0",
+      data_override:  "0",
+      environment:    WIPAY_ENVIRONMENT,
+      fee_structure:  "merchant_absorb",
+      method:         "credit_card",
+      order_id:       paymentRef.id,
+      origin:         "Valeo Experience",
+      return_url:     `${APP_URL}/payment/callback`,   // ← page, not API route
+      total:          amount.toFixed(2),
+      name:           clientName  ?? "Client",
+      email:          clientEmail ?? "",
+    });
+
+    console.log("[Initiate] Calling WiPay:", WIPAY_BASE_URL, "env:", WIPAY_ENVIRONMENT);
+
+    // ── Call WiPay ────────────────────────────────────────────────────────────
+    const wipayRes  = await fetch(WIPAY_BASE_URL, {
+      method:  "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body:    payload.toString(),
+    });
+
+    const wipayData = await wipayRes.json();
+    console.log("[Initiate] WiPay response:", JSON.stringify(wipayData));
+
+    if (!wipayData.url) {
+      console.error("[Initiate] WiPay returned no URL:", wipayData);
+      // Clean up the pending payment record since WiPay rejected
+      await paymentRef.delete();
+      return NextResponse.json(
+        { error: wipayData.message ?? "Payment gateway error" },
+        { status: 502 }
+      );
     }
 
-    return NextResponse.json({ verified: true, status: 'completed' });
+    // ── Store WiPay reference and return redirect URL ─────────────────────────
+    await paymentRef.update({ wipayRef: wipayData.url });
+    return NextResponse.json({ redirect: wipayData.url });
 
   } catch (err) {
-    console.error('[WiPay] verify-callback exception:', err);
-    return NextResponse.json({ error: 'Internal server error.' }, { status: 500 });
+    console.error("[Initiate] Unhandled exception:", err);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
