@@ -6,9 +6,10 @@ import { FieldValue } from "firebase-admin/firestore";
 const WIPAY_ACCOUNT_NUMBER = process.env.WIPAY_ACCOUNT_NUMBER ?? "";
 const WIPAY_API_KEY        = process.env.WIPAY_API_KEY        ?? "";
 const WIPAY_ENVIRONMENT    = process.env.WIPAY_ENVIRONMENT    ?? "sandbox";
-const WIPAY_BASE_URL       = WIPAY_ENVIRONMENT === "live"
-  ? "https://wipayfinancial.com/v1/gateway"
-  : "https://sandbox.wipayfinancial.com/v1/gateway";
+
+// WiPay correct endpoint — sandbox and live use the SAME base URL.
+// The environment is passed as a field in the POST body, not via subdomain.
+const WIPAY_BASE_URL = "https://wipayfinancial.com/v1/gateway";
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? "https://www.valeoexperience.com";
 
@@ -111,15 +112,39 @@ export async function POST(req: NextRequest) {
       body:    payload.toString(),
     });
 
-    const wipayData = await wipayRes.json();
-    console.log("[Initiate] WiPay response:", JSON.stringify(wipayData));
+    // ── Safely parse WiPay response — guard against HTML error pages ─────────
+    const rawText        = await wipayRes.text();
+    const contentType    = wipayRes.headers.get("content-type") ?? "";
+    const isJson         = contentType.includes("application/json") || rawText.trimStart().startsWith("{");
+
+    console.log("[Initiate] WiPay status:", wipayRes.status, "| content-type:", contentType);
+    console.log("[Initiate] WiPay raw response:", rawText.slice(0, 500));
+
+    if (!isJson) {
+      console.error("[Initiate] WiPay returned non-JSON (HTML error page). Raw:", rawText.slice(0, 300));
+      await paymentRef.delete();
+      return NextResponse.json(
+        { error: "Payment gateway returned an unexpected response. Check WiPay credentials." },
+        { status: 502 }
+      );
+    }
+
+    let wipayData: any;
+    try {
+      wipayData = JSON.parse(rawText);
+    } catch (parseErr) {
+      console.error("[Initiate] JSON parse failed:", parseErr, "| Raw:", rawText.slice(0, 300));
+      await paymentRef.delete();
+      return NextResponse.json({ error: "Payment gateway error" }, { status: 502 });
+    }
+
+    console.log("[Initiate] WiPay parsed response:", JSON.stringify(wipayData));
 
     if (!wipayData.url) {
       console.error("[Initiate] WiPay returned no URL:", wipayData);
-      // Clean up the pending payment record since WiPay rejected
       await paymentRef.delete();
       return NextResponse.json(
-        { error: wipayData.message ?? "Payment gateway error" },
+        { error: wipayData.message ?? wipayData.errors ?? "Payment gateway error" },
         { status: 502 }
       );
     }
