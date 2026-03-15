@@ -73,7 +73,7 @@ export async function POST(req: Request) {
 
     // ── Trigger Google Meet link generation via existing API route ─────────
     try {
-      const baseUrl = process.env.NEXT_PUBLIC_BASE_URL ?? 'https://valeoexperience.com';
+      const baseUrl = process.env.NEXT_PUBLIC_BASE_URL ?? 'https://www.valeoexperience.com';
       await fetch(`${baseUrl}/api/appointments/generate-meet`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },

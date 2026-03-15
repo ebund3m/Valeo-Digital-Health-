@@ -36,7 +36,7 @@ export async function POST(req: Request) {
 
     // ── Build the return URL ───────────────────────────────────────────────
     // WiPay appends ?status=&order_id=&transaction_id=&hash=&total= as query params.
-    const baseUrl    = process.env.NEXT_PUBLIC_BASE_URL ?? 'https://valeoexperience.com';
+    const baseUrl    = process.env.NEXT_PUBLIC_BASE_URL ?? 'https://www.valeoexperience.com';
     const responseUrl = `${baseUrl}/payment/callback`;
 
     // ── Create a pending payment record in Firestore ───────────────────────
