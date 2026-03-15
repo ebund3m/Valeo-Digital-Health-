@@ -90,6 +90,7 @@ export async function POST(req: NextRequest) {
     // ── Build WiPay payload ───────────────────────────────────────────────────
     const payload = new URLSearchParams({
       account_number: WIPAY_ACCOUNT_NUMBER,
+      api_key:        WIPAY_API_KEY,           // ← required for auth
       avs:            "0",
       data_override:  "0",
       environment:    WIPAY_ENVIRONMENT,
@@ -97,7 +98,7 @@ export async function POST(req: NextRequest) {
       method:         "credit_card",
       order_id:       paymentRef.id,
       origin:         "Valeo Experience",
-      return_url:     `${APP_URL}/payment/callback`,   // ← page, not API route
+      return_url:     `${APP_URL}/payment/callback`,
       total:          amount.toFixed(2),
       name:           clientName  ?? "Client",
       email:          clientEmail ?? "",
