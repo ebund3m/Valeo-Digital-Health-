@@ -6,14 +6,15 @@
 // We POST them to our server-side verify-callback route for hash verification,
 // then redirect to the appropriate result page.
 
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Loader2, CheckCircle, XCircle } from 'lucide-react';
 
-export default function PaymentCallbackPage() {
+// ── Inner component — useSearchParams() is safe inside Suspense ──────────────
+function CallbackHandler() {
   const router       = useRouter();
   const searchParams = useSearchParams();
-  const processed    = useRef(false); // prevent double-fire in React Strict Mode
+  const processed    = useRef(false);
 
   const [statusMsg, setStatusMsg] = useState('Verifying your payment…');
   const [isError,   setIsError]   = useState(false);
@@ -36,7 +37,6 @@ export default function PaymentCallbackPage() {
       return;
     }
 
-    // ── Send to server for hash verification + Firestore update ───────────
     (async () => {
       try {
         const res = await fetch('/api/wipay/verify-callback', {
@@ -62,7 +62,6 @@ export default function PaymentCallbackPage() {
           setIsError(true);
           setTimeout(() => router.replace(`/payment/failed?order_id=${order_id}`), 2000);
         }
-
       } catch (err) {
         console.error('[Callback] verify error:', err);
         setStatusMsg('An error occurred verifying your payment.');
@@ -92,5 +91,33 @@ export default function PaymentCallbackPage() {
         <p className="text-sm" style={{ color: '#8A9BA8' }}>{statusMsg}</p>
       </div>
     </div>
+  );
+}
+
+// ── Fallback shown during SSR / before hydration ─────────────────────────────
+function CallbackFallback() {
+  return (
+    <div className="min-h-screen flex items-center justify-center px-4"
+      style={{ background: 'linear-gradient(135deg, #0D3B44 0%, #1A535C 100%)' }}>
+      <div className="rounded-3xl p-10 text-center max-w-sm w-full"
+        style={{ background: 'white', boxShadow: '0 20px 60px rgba(13,59,68,0.25)' }}>
+        <div className="mb-5">
+          <Loader2 size={44} className="animate-spin mx-auto" style={{ color: '#4ECDC4' }} />
+        </div>
+        <h2 className="text-xl mb-2" style={{ fontFamily: 'var(--font-dm-serif)', color: '#0D3B44' }}>
+          Processing Payment
+        </h2>
+        <p className="text-sm" style={{ color: '#8A9BA8' }}>Verifying your payment…</p>
+      </div>
+    </div>
+  );
+}
+
+// ── Page export — Suspense required for useSearchParams() ────────────────────
+export default function PaymentCallbackPage() {
+  return (
+    <Suspense fallback={<CallbackFallback />}>
+      <CallbackHandler />
+    </Suspense>
   );
 }
