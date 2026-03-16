@@ -458,43 +458,36 @@ function ClientAppointmentsPageInner() {
           sessionType: selectedTypeObj?.label,
         }),
       });
+const data = await res.json();
 
-      const data = await res.json();
+if (!res.ok || data.error) {
+  setError(data.error ?? "Could not initiate payment. Please try again.");
+  setRedirecting(false);
+  return;
+}
 
-      if (!res.ok || data.error) {
-        setError(data.error ?? "Could not initiate payment. Please try again.");
-        setRedirecting(false);
-        return;
-      }
+if (data.free && data.redirect) {
+  window.location.href = data.redirect;
+  return;
+}
 
-      // Free session handled server-side (e.g. amount came back as 0)
-      if (data.free && data.redirect) {
-        window.location.href = data.redirect;
-        return;
-      }
-
-      // ── Build a hidden form and POST directly to WiPay ──────────────────
-      // WiPay uses a browser form POST, not a JSON redirect URL.
-      if (data.formAction && data.formFields) {
-        const form = document.createElement("form");
-        form.method = "POST";
-        form.action = data.formAction;
-
-        Object.entries(data.formFields as Record<string, string>).forEach(([key, value]) => {
-          const input = document.createElement("input");
-          input.type  = "hidden";
-          input.name  = key;
-          input.value = value;
-          form.appendChild(input);
-        });
-
-        document.body.appendChild(form);
-        form.submit(); // browser navigates to WiPay checkout
-        return;
-      }
-
-      setError("Could not initiate payment. Please try again.");
-      setRedirecting(false);
+if (data.formAction && data.formFields) {
+  const form = document.createElement("form");
+  form.method = "POST";
+  form.action = data.formAction;
+  Object.entries(data.formFields as Record<string, string>).forEach(([key, value]) => {
+    const input = document.createElement("input");
+    input.type  = "hidden";
+    input.name  = key;
+    input.value = value;
+    form.appendChild(input);
+  });
+  document.body.appendChild(form);
+  form.submit();
+  return;
+}
+setError("Could not initiate payment. Please try again.");
+setRedirecting(false);
 
     } catch (err) {
       console.error("Booking error:", err);
@@ -503,7 +496,6 @@ function ClientAppointmentsPageInner() {
       setRedirecting(false);
     }
   }
-
 
   // ── Filtered appointments ─────────────────────────────────────────────
   const todayStr = typeof window !== "undefined" ? new Date().toISOString().split("T")[0] : "";
