@@ -413,7 +413,7 @@ function ClientAppointmentsPageInner() {
     }
   }
 
-  async function handleSubmit() {
+    async function handleSubmit() {
     if (!user || !selectedType || !selectedDate || !selectedTime) return;
     if (!doctorId) {
       setError("Unable to reach Dr. Miller's profile. Please refresh and try again.");
@@ -426,7 +426,7 @@ function ClientAppointmentsPageInner() {
         clientId:    user.uid,
         clientName:  user.displayName ?? "Client",
         clientEmail: user.email ?? "",
-        doctorId,                          // FIX 1: real UID
+        doctorId,
         type:        selectedTypeObj?.label ?? selectedType,
         date:        selectedDate,
         time:        selectedTime,
@@ -434,7 +434,7 @@ function ClientAppointmentsPageInner() {
         ...(notes ? { notes } : {}),
       });
 
-      // FIX 3: Free consultation — skip payment entirely, show success
+      // Free consultation — skip payment
       if (selectedTypeObj?.price === 0) {
         setSubmitting(false);
         resetBooking();
@@ -442,7 +442,7 @@ function ClientAppointmentsPageInner() {
         return;
       }
 
-      // Paid session — redirect to WiPay
+      // Paid session — get WiPay form params from server
       setStep(4);
       setSubmitting(false);
       setRedirecting(true);
@@ -458,20 +458,52 @@ function ClientAppointmentsPageInner() {
           sessionType: selectedTypeObj?.label,
         }),
       });
+
       const data = await res.json();
-      if (data.redirect) {
-        window.location.href = data.redirect;
-      } else {
-        setError("Could not initiate payment. Please try again.");
+
+      if (!res.ok || data.error) {
+        setError(data.error ?? "Could not initiate payment. Please try again.");
         setRedirecting(false);
+        return;
       }
+
+      // Free session handled server-side (e.g. amount came back as 0)
+      if (data.free && data.redirect) {
+        window.location.href = data.redirect;
+        return;
+      }
+
+      // ── Build a hidden form and POST directly to WiPay ──────────────────
+      // WiPay uses a browser form POST, not a JSON redirect URL.
+      if (data.formAction && data.formFields) {
+        const form = document.createElement("form");
+        form.method = "POST";
+        form.action = data.formAction;
+
+        Object.entries(data.formFields as Record<string, string>).forEach(([key, value]) => {
+          const input = document.createElement("input");
+          input.type  = "hidden";
+          input.name  = key;
+          input.value = value;
+          form.appendChild(input);
+        });
+
+        document.body.appendChild(form);
+        form.submit(); // browser navigates to WiPay checkout
+        return;
+      }
+
+      setError("Could not initiate payment. Please try again.");
+      setRedirecting(false);
 
     } catch (err) {
       console.error("Booking error:", err);
       setError("Failed to book appointment. Please try again.");
       setSubmitting(false);
+      setRedirecting(false);
     }
   }
+
 
   // ── Filtered appointments ─────────────────────────────────────────────
   const todayStr = typeof window !== "undefined" ? new Date().toISOString().split("T")[0] : "";
