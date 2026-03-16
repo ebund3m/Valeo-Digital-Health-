@@ -5,7 +5,7 @@ import { FieldValue } from "firebase-admin/firestore";
 const WIPAY_ACCOUNT_NUMBER = process.env.WIPAY_ACCOUNT_NUMBER ?? "";
 const WIPAY_API_KEY        = process.env.WIPAY_API_KEY        ?? "";
 const WIPAY_ENVIRONMENT    = process.env.WIPAY_ENVIRONMENT    ?? "live";
-const WIPAY_GATEWAY_URL    = "https://wipayfinancial.com/v1/gateway";
+const WIPAY_GATEWAY_URL    = process.env.WIPAY_GATEWAY_URL ?? "https://bb.wipayfinancial.com/v1/gateway";
 const APP_URL              = process.env.NEXT_PUBLIC_APP_URL ?? "https://www.valeoexperience.com";
 
 const SESSION_PRICES: Record<string, number> = {
@@ -83,7 +83,7 @@ export async function POST(req: NextRequest) {
       formAction: WIPAY_GATEWAY_URL,
       formFields: {
         account_number: WIPAY_ACCOUNT_NUMBER,
-        api_key:        WIPAY_API_KEY,
+        ...(WIPAY_API_KEY ? { api_key: WIPAY_API_KEY } : {}),
         avs:            "0",
         data_override:  "0",
         environment:    WIPAY_ENVIRONMENT,
